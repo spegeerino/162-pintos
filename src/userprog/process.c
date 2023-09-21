@@ -50,29 +50,32 @@ void userprog_init(void) {
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
-pid_t process_execute(const char* file_name) {
-  char* fn_copy;
+pid_t process_execute(const char* cmd_line) {
+  char* cl_copy;
   tid_t tid;
 
   sema_init(&temporary, 0);
-  /* Make a copy of FILE_NAME.
+  /* Make a copy of CMD_LINE.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page(0);
-  if (fn_copy == NULL)
+  cl_copy = palloc_get_page(0);
+  if (cl_copy == NULL)
     return TID_ERROR;
-  strlcpy(fn_copy, file_name, PGSIZE);
+  strlcpy(cl_copy, cmd_line, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* Create a new thread to execute CMD_LINE. */
+  tid = thread_create(cmd_line, PRI_DEFAULT, start_process, cl_copy);
   if (tid == TID_ERROR)
-    palloc_free_page(fn_copy);
+    palloc_free_page(cl_copy);
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
-static void start_process(void* file_name_) {
-  char* file_name = (char*)file_name_;
+static void start_process(void* cmd_line_) {
+  char* cmd_line = (char*)cmd_line_;
+  char* saveptr;
+  char* arg = strtok_r(cmd_line, " ", &saveptr);
+
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
@@ -90,7 +93,7 @@ static void start_process(void* file_name_) {
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
-    strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+    strlcpy(t->pcb->process_name, arg, sizeof t->name);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -99,7 +102,46 @@ static void start_process(void* file_name_) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
+    success = load(arg, &if_.eip, &if_.esp);
+
+    // reset cmd_line so we can copy to the user stack
+    cmd_line[strlen(arg)] = ' ';
+
+    // copy cmd_line to the user stack
+    // TODO: what happens if the stack isn't big enough?
+    size_t cmd_line_size = strlen(cmd_line) + 1;
+    char* user_cl = if_.esp - cmd_line_size;
+    strlcpy(user_cl, cmd_line, cmd_line_size);
+
+    // start building argv backwards
+    int argc = 0;
+    char** argv = (char**)user_cl - 1;
+    *argv = NULL; // argv[argc] must be null
+    for (arg = strtok_r(user_cl, " ", &saveptr); arg != NULL; arg = strtok_r(NULL, " ", &saveptr)) {
+      *(--argv) = arg;
+      argc++;
+    }
+
+    // swap elements so args aren't backwards
+    for (int i = 0; i * 2 < argc; i++) {
+      char* tmp = argv[i];
+      argv[i] = argv[argc - i - 1];
+      argv[argc - i - 1] = tmp;
+    }
+
+    // set stack to bottom of argv, and add padding to align
+    if_.esp = (void*)((uintptr_t)argv & -16);
+    if_.esp -= 12;
+
+    // push argc and argv to stack
+    if_.esp -= sizeof(char**);
+    *((char***)if_.esp) = argv;
+
+    if_.esp -= sizeof(int);
+    *((int*)if_.esp) = argc;
+
+    // push dummy return address
+    if_.esp -= sizeof(void*);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
@@ -113,7 +155,7 @@ static void start_process(void* file_name_) {
   }
 
   /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(file_name);
+  palloc_free_page(cmd_line);
   if (!success) {
     sema_up(&temporary);
     thread_exit();
