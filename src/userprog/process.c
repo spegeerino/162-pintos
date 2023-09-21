@@ -73,7 +73,6 @@ pid_t process_execute(const char* cmd_line) {
    running. */
 static void start_process(void* cmd_line_) {
   char* cmd_line = (char*)cmd_line_;
-  size_t cmd_line_len = strlen(cmd_line);
   char* saveptr;
   char* arg = strtok_r(cmd_line, " ", &saveptr);
 
@@ -105,30 +104,22 @@ static void start_process(void* cmd_line_) {
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(arg, &if_.eip, &if_.esp);
 
-    // reset cmd_line so we can copy to the user stack
-    if (strlen(arg) < cmd_line_len) {
-      cmd_line[strlen(arg)] = ' ';
+    char* it = (char*)if_.esp;
+
+    // copy each argument to the user stack
+    for (; arg != NULL; arg = strtok_r(NULL, " ", &saveptr)) {
+      size_t arg_size = strlen(arg) + 1;
+      it -= arg_size;
+      strlcpy(it, arg, arg_size);
     }
 
-    // copy cmd_line to the user stack
-    // TODO: what happens if the stack isn't big enough?
-    char* user_cl = if_.esp - cmd_line_len - 1;
-    strlcpy(user_cl, cmd_line, cmd_line_len + 1);
-
-    // start building argv backwards
     int argc = 0;
-    char** argv = (char**)user_cl - 1;
+    char** argv = (char**)it - 1;
     *argv = NULL; // argv[argc] must be null
-    for (arg = strtok_r(user_cl, " ", &saveptr); arg != NULL; arg = strtok_r(NULL, " ", &saveptr)) {
-      *(--argv) = arg;
-      argc++;
-    }
 
-    // swap elements so args aren't backwards
-    for (int i = 0; i * 2 < argc; i++) {
-      char* tmp = argv[i];
-      argv[i] = argv[argc - i - 1];
-      argv[argc - i - 1] = tmp;
+    for (; it != if_.esp; it += strlen(it) + 1) {
+      *(--argv) = it;
+      argc++;
     }
 
     // set stack to bottom of argv, and add padding to align
