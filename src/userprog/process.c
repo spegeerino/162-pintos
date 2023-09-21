@@ -73,6 +73,7 @@ pid_t process_execute(const char* cmd_line) {
    running. */
 static void start_process(void* cmd_line_) {
   char* cmd_line = (char*)cmd_line_;
+  size_t cmd_line_len = strlen(cmd_line);
   char* saveptr;
   char* arg = strtok_r(cmd_line, " ", &saveptr);
 
@@ -105,13 +106,14 @@ static void start_process(void* cmd_line_) {
     success = load(arg, &if_.eip, &if_.esp);
 
     // reset cmd_line so we can copy to the user stack
-    cmd_line[strlen(arg)] = ' ';
+    if (strlen(arg) < cmd_line_len) {
+      cmd_line[strlen(arg)] = ' ';
+    }
 
     // copy cmd_line to the user stack
     // TODO: what happens if the stack isn't big enough?
-    size_t cmd_line_size = strlen(cmd_line) + 1;
-    char* user_cl = if_.esp - cmd_line_size;
-    strlcpy(user_cl, cmd_line, cmd_line_size);
+    char* user_cl = if_.esp - cmd_line_len - 1;
+    strlcpy(user_cl, cmd_line, cmd_line_len + 1);
 
     // start building argv backwards
     int argc = 0;
