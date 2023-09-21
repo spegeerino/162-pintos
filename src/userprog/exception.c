@@ -135,6 +135,18 @@ static void page_fault(struct intr_frame* f) {
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+  if (!user) {
+    // For kernel page faults, simply put eax's value into eip and set eax to -1
+    // since reading kernel memory can't page fault, this means that the kernel
+    // tried to access invalid user memory (presumably passed from a syscall).
+
+    // Read syscall.c for more context on what this is used for.
+
+    f->eip = f->eax;
+    f->eax = -1;
+    return;
+  }
+
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
