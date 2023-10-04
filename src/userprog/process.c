@@ -124,7 +124,7 @@ static void start_process(void* cmd_line_) {
 
     // set stack to bottom of argv, and add padding to align
     if_.esp = (void*)((uintptr_t)argv & -16);
-    if_.esp -= 12;
+    if_.esp -= 8;
 
     // push argc and argv to stack
     if_.esp -= sizeof(char**);
