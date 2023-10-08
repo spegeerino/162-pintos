@@ -9,14 +9,10 @@
 #define SYSCALL_MAX_NARGS 5
 
 static void syscall_handler(struct intr_frame*);
-
-static uint32_t sc_practice(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) NO_RETURN;
-static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
-
-static bool get_user_chunk(const uint8_t* uaddr, uint8_t* buf, int size);
-static bool get_user(const uint8_t* uaddr, uint8_t* buf);
-static bool put_user(uint8_t* udst, uint8_t byte);
+static void segfault(struct intr_frame*);
+static bool get_bytes(const uint8_t* uaddr, uint8_t* buf, int size);
+static bool get_byte(const uint8_t* uaddr, uint8_t* buf);
+static bool put_byte(uint8_t* udst, uint8_t byte);
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
@@ -26,58 +22,19 @@ struct syscall_desc {
   int nargs;
 };
 
+// ==============================
+// Handlers for specific syscalls
+// ==============================
+
+static uint32_t sc_practice(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) NO_RETURN;
+static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
+
 struct syscall_desc syscall_table[] = {
     {SYS_PRACTICE, sc_practice, 1},
     {SYS_EXIT, sc_exit, 1},
     {SYS_WRITE, sc_write, 3},
 };
-
-static struct syscall_desc* syscall_lookup(uint32_t syscall_number) {
-  for (unsigned i = 0; i < sizeof(syscall_table) / sizeof(*syscall_table); i++) {
-    if (syscall_table[i].syscall_number == syscall_number) {
-      return &syscall_table[i];
-    }
-  }
-  return NULL;
-}
-
-static void segfault(struct intr_frame* f) {
-  uint32_t args[] = {-1};
-  sc_exit(f, args);
-}
-
-static void syscall_handler(struct intr_frame* f) {
-  /*
-   * The following print statement, if uncommented, will print out the syscall
-   * number whenever a process enters a system call. You might find it useful
-   * when debugging. It will cause tests to fail, however, so you should not
-   * include it in your final submission.
-   */
-
-  /* printf("System call number: %d\n", args[0]); */
-
-  uint32_t syscall_number;
-  if (!get_user_chunk(f->esp, (uint8_t*)&syscall_number, 4)) {
-    segfault(f);
-  }
-
-  struct syscall_desc* syscall = syscall_lookup(syscall_number);
-  if (syscall == NULL) {
-    f->eax = -1;
-    return;
-  }
-
-  uint32_t args[SYSCALL_MAX_NARGS];
-  if (!get_user_chunk(f->esp + 4, (uint8_t*)args, syscall->nargs * 4)) {
-    segfault(f);
-  }
-
-  f->eax = syscall->fun(f, args);
-}
-
-// ==============================
-// Handlers for specific syscalls
-// ==============================
 
 static uint32_t sc_practice(struct intr_frame* f UNUSED, uint32_t* args) {
   int arg = args[0];
@@ -109,6 +66,53 @@ static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
   return size;
 }
 
+// =============================
+// General syscall handler stuff
+// =============================
+
+static struct syscall_desc* syscall_lookup(uint32_t syscall_number) {
+  for (unsigned i = 0; i < sizeof(syscall_table) / sizeof(*syscall_table); i++) {
+    if (syscall_table[i].syscall_number == syscall_number) {
+      return &syscall_table[i];
+    }
+  }
+  return NULL;
+}
+
+static void syscall_handler(struct intr_frame* f) {
+  /*
+   * The following print statement, if uncommented, will print out the syscall
+   * number whenever a process enters a system call. You might find it useful
+   * when debugging. It will cause tests to fail, however, so you should not
+   * include it in your final submission.
+   */
+
+  /* printf("System call number: %d\n", args[0]); */
+
+  uint32_t syscall_number;
+  if (!get_bytes(f->esp, (uint8_t*)&syscall_number, 4)) {
+    segfault(f);
+  }
+
+  struct syscall_desc* syscall = syscall_lookup(syscall_number);
+  if (syscall == NULL) {
+    f->eax = -1;
+    return;
+  }
+
+  uint32_t args[SYSCALL_MAX_NARGS];
+  if (!get_bytes(f->esp + 4, (uint8_t*)args, syscall->nargs * 4)) {
+    segfault(f);
+  }
+
+  f->eax = syscall->fun(f, args);
+}
+
+static void segfault(struct intr_frame* f) {
+  uint32_t args[] = {-1};
+  sc_exit(f, args);
+}
+
 // =======
 // Helpers
 // =======
@@ -116,9 +120,9 @@ static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
 /* Reads multiple bytes at user virtual address UADDR into buf.
    Returns true if successful,
    false if a segfault occurred. */
-static bool get_user_chunk(const uint8_t* uaddr, uint8_t* buf, int size) {
+static bool get_bytes(const uint8_t* uaddr, uint8_t* buf, int size) {
   for (int i = 0; i < size; i++) {
-    if (!get_user(uaddr++, buf++)) {
+    if (!get_byte(uaddr++, buf++)) {
       return false;
     }
   }
@@ -128,7 +132,7 @@ static bool get_user_chunk(const uint8_t* uaddr, uint8_t* buf, int size) {
 /* Reads a byte at user virtual address UADDR into buf.
    Returns true if successful,
    false if a segfault occurred. */
-static bool get_user(const uint8_t* uaddr, uint8_t* buf) {
+static bool get_byte(const uint8_t* uaddr, uint8_t* buf) {
   if (uaddr >= (uint8_t*)PHYS_BASE) {
     return false;
   }
@@ -173,7 +177,7 @@ static bool get_user(const uint8_t* uaddr, uint8_t* buf) {
 /* Writes BYTE to user address UDST.
    Returns true if successful,
    false if a segfault occurred. */
-static bool put_user(uint8_t* udst, uint8_t byte) {
+static bool put_byte(uint8_t* udst, uint8_t byte) {
   if (udst >= (uint8_t*)PHYS_BASE) {
     return false;
   }
