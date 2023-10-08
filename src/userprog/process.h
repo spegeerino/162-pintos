@@ -37,14 +37,16 @@ struct shared_proc_data {
   pid_t pid;
   char* cmd_line;
   struct semaphore exec_sema;
-
+  struct semaphore wait_sema;
+  int exit_status;
+  
   struct list_elem elem;
   struct arc arc;
 };
 
 void userprog_init(void);
 
-struct shared_proc_data* process_execute(const char* file_name);
+int process_execute(const char* file_name);
 int process_wait(pid_t);
 void process_exit(void);
 void process_activate(void);

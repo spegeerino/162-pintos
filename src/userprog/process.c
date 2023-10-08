@@ -2,6 +2,7 @@
 #include <debug.h>
 #include <inttypes.h>
 #include <round.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +47,8 @@ void userprog_init(void) {
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
 
+  list_init(&t->pcb->children_shared);
+
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
 }
@@ -54,25 +57,28 @@ void userprog_init(void) {
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
-struct shared_proc_data* process_execute(const char* cmd_line) {
-  sema_init(&temporary, 0);
+int process_execute(const char* cmd_line) {
+  // sema_init(&temporary, 0);
 
   /* Make a copy of CMD_LINE.
      Otherwise there's a race between the caller and load(). */
   struct shared_proc_data* shared = malloc(sizeof *shared);
   if (!shared_proc_data_init(shared))
-    return NULL;
+    return TID_ERROR;
   strlcpy(shared->cmd_line, cmd_line, PGSIZE);
 
   /* Create a new thread to execute CMD_LINE. */
   shared->pid = thread_create(cmd_line, PRI_DEFAULT, start_process, shared);
   if (shared->pid == TID_ERROR) {
     shared_proc_data_destroy(&shared->arc);
-    return NULL;
+    return TID_ERROR;
   }
 
+  struct process* pcb = thread_current()->pcb;
+  list_push_back(&pcb->children_shared, &shared->elem);
+
   sema_down(&shared->exec_sema);
-  return shared;
+  return shared->pid;
 }
 
 /* A thread function that loads a user process and starts it
@@ -162,7 +168,7 @@ static void start_process(void* _data) {
   /* Clean up. Exit on failure or jump to userspace */
   if (!success) {
     shared->pid = TID_ERROR;
-    sema_up(&temporary);
+    // sema_up(&temporary);
     sema_up(&shared->exec_sema);
     arc_dec_ref(&shared->arc);
     thread_exit();
@@ -189,9 +195,27 @@ static void start_process(void* _data) {
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
-int process_wait(pid_t child_pid UNUSED) {
-  sema_down(&temporary);
-  return 0;
+int process_wait(pid_t child_pid) {
+  struct process* pcb = thread_current()->pcb;
+  struct list_elem* e;
+  struct shared_proc_data* child_shared = NULL;
+  // check for child with matching pid
+  for (e = list_begin(&pcb->children_shared); e != list_end(&pcb->children_shared); e = list_next(e)) {
+    child_shared = list_entry(e, struct shared_proc_data, elem);
+
+    if (child_shared->pid == child_pid) // not null, because of arc
+      break;
+  }
+  if (child_shared == NULL) { // no child with matching pid (or has been destroyed already)
+    return -1;
+  }
+  sema_down(&child_shared->wait_sema);
+  int status = child_shared->exit_status;
+  // remove child_shared from children_shared list
+  list_remove(&child_shared->elem);
+  arc_dec_ref(&child_shared->arc);
+  // sema_down(&temporary);
+  return status;
 }
 
 /* Free the current process's resources. */
@@ -227,10 +251,18 @@ void process_exit(void) {
      can try to activate the pagedir, but it is now freed memory */
   struct process* pcb_to_free = cur->pcb;
   cur->pcb = NULL;
+  // need to sema_up on shared wait_sema to tell parent to wake up
+  sema_up(&pcb_to_free->shared->wait_sema);
   arc_dec_ref(&pcb_to_free->shared->arc);
+  struct list_elem* e;
+  for (e = list_begin(&pcb_to_free->children_shared); e != list_end(&pcb_to_free->children_shared);
+       e = list_next(e)) {
+        struct shared_proc_data* child_shared = list_entry(e, struct shared_proc_data, elem);
+        arc_dec_ref(&child_shared->arc);
+       }
   free(pcb_to_free);
 
-  sema_up(&temporary);
+  // sema_up(&temporary);
   thread_exit();
 }
 
@@ -255,7 +287,9 @@ bool shared_proc_data_init(struct shared_proc_data* shared) {
   if (shared->cmd_line == NULL)
     return false;
   shared->pid = -1;
+  shared->exit_status = -1; // default status -1 for kernel termination
   sema_init(&shared->exec_sema, 0);
+  sema_init(&shared->wait_sema, 0);
   arc_init(&shared->arc, shared_proc_data_destroy);
   return true;
 }
