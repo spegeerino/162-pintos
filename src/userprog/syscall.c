@@ -152,12 +152,12 @@ static void segfault(struct intr_frame* f) {
    false if a segfault occurred. */
 static bool get_str(const uint8_t* uaddr, uint8_t* buf, int maxsize) {
   uint8_t tmp = 1;
-  for (int i = 0; tmp && i < maxsize; i++) {
-    if (!get_byte(uaddr++, &tmp)) {
+  for (int i = 0; tmp && i < maxsize - 1; i++) {
+    if (!get_byte(uaddr++, &tmp))
       return false;
-    }
     *(buf++) = tmp;
   }
+  *buf = 0;
   return true;
 }
 
