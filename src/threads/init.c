@@ -312,7 +312,11 @@ static void run_task(char** argv) {
 
   printf("Executing '%s':\n", task);
 #ifdef USERPROG
-  process_wait(process_execute(task));
+  struct shared_proc_data* shared = process_execute(task);
+  if (shared != NULL && shared->pid != TID_ERROR)
+    process_wait(shared->pid);
+  if (shared != NULL)
+    shared_proc_data_destroy(&shared->arc);
 #endif
   printf("Execution of '%s' complete.\n", task);
 }

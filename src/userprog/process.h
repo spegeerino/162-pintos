@@ -1,6 +1,7 @@
 #ifndef USERPROG_PROCESS_H
 #define USERPROG_PROCESS_H
 
+#include "threads/arc.h"
 #include "threads/thread.h"
 #include <stdint.h>
 
@@ -27,14 +28,29 @@ struct process {
   uint32_t* pagedir;          /* Page directory. */
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
+
+  struct shared_proc_data* shared;
+  struct list children_shared;
+};
+
+struct shared_proc_data {
+  pid_t pid;
+  char* cmd_line;
+  struct semaphore exec_sema;
+
+  struct list_elem elem;
+  struct arc arc;
 };
 
 void userprog_init(void);
 
-pid_t process_execute(const char* file_name);
+struct shared_proc_data* process_execute(const char* file_name);
 int process_wait(pid_t);
 void process_exit(void);
 void process_activate(void);
+
+bool shared_proc_data_init(struct shared_proc_data* shared);
+void shared_proc_data_destroy(struct arc* arc);
 
 bool is_main_thread(struct thread*, struct process*);
 pid_t get_pid(struct process*);

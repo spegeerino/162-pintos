@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "list.h"
+#include "stdbool.h"
+#include "stddef.h"
+#include "threads/arc.h"
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
@@ -25,6 +29,11 @@ static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
+
+struct start_process_arg {
+  char* cmd_line;
+  struct shared_proc_data* shared;
+};
 
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
@@ -50,31 +59,39 @@ void userprog_init(void) {
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
-pid_t process_execute(const char* cmd_line) {
-  char* cl_copy;
-  tid_t tid;
-
+struct shared_proc_data* process_execute(const char* cmd_line) {
   sema_init(&temporary, 0);
+
   /* Make a copy of CMD_LINE.
      Otherwise there's a race between the caller and load(). */
-  cl_copy = palloc_get_page(0);
-  if (cl_copy == NULL)
-    return TID_ERROR;
-  strlcpy(cl_copy, cmd_line, PGSIZE);
+  struct shared_proc_data* shared = malloc(sizeof *shared);
+  if (!shared_proc_data_init(shared))
+    return NULL;
+  strlcpy(shared->cmd_line, cmd_line, PGSIZE);
 
   /* Create a new thread to execute CMD_LINE. */
-  tid = thread_create(cmd_line, PRI_DEFAULT, start_process, cl_copy);
-  if (tid == TID_ERROR)
-    palloc_free_page(cl_copy);
-  return tid;
+  shared->pid = thread_create(cmd_line, PRI_DEFAULT, start_process, shared);
+  printf("%s TEST 1\n\n", cmd_line);
+  if (shared->pid == TID_ERROR) {
+    shared_proc_data_destroy(&shared->arc);
+    return NULL;
+  }
+  printf("%s TEST 2\n\n", cmd_line);
+
+  sema_down(&shared->exec_sema);
+  printf("%s TEST 3\n\n", cmd_line);
+  printf("%p\n\n", shared);
+  return shared;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
-static void start_process(void* cmd_line_) {
-  char* cmd_line = (char*)cmd_line_;
+static void start_process(void* _data) {
+  struct shared_proc_data* shared = _data;
+  arc_inc_ref(&shared->arc);
+
   char* saveptr;
-  char* arg = strtok_r(cmd_line, " ", &saveptr);
+  char* arg = strtok_r(shared->cmd_line, " ", &saveptr);
 
   struct thread* t = thread_current();
   struct intr_frame if_;
@@ -92,8 +109,10 @@ static void start_process(void* cmd_line_) {
     t->pcb = new_pcb;
 
     // Continue initializing the PCB as normal
+    t->pcb->shared = shared;
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, arg, sizeof t->name);
+    list_init(&t->pcb->children_shared);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -103,7 +122,9 @@ static void start_process(void* cmd_line_) {
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(arg, &if_.eip, &if_.esp);
+  }
 
+  if (success) {
     char* it = (char*)if_.esp;
 
     // copy each argument to the user stack
@@ -148,11 +169,16 @@ static void start_process(void* cmd_line_) {
   }
 
   /* Clean up. Exit on failure or jump to userspace */
-  palloc_free_page(cmd_line);
   if (!success) {
+    shared->pid = TID_ERROR;
+    printf("TEST\n");
     sema_up(&temporary);
+    sema_up(&shared->exec_sema);
+    arc_dec_ref(&shared->arc);
     thread_exit();
   }
+
+  sema_up(&shared->exec_sema);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -211,6 +237,7 @@ void process_exit(void) {
      can try to activate the pagedir, but it is now freed memory */
   struct process* pcb_to_free = cur->pcb;
   cur->pcb = NULL;
+  arc_dec_ref(&pcb_to_free->shared->arc);
   free(pcb_to_free);
 
   sema_up(&temporary);
@@ -231,6 +258,22 @@ void process_activate(void) {
   /* Set thread's kernel stack for use in processing interrupts.
      This does nothing if this is not a user process. */
   tss_update();
+}
+
+bool shared_proc_data_init(struct shared_proc_data* shared) {
+  shared->cmd_line = palloc_get_page(0);
+  if (shared->cmd_line == NULL)
+    return false;
+  shared->pid = -1;
+  sema_init(&shared->exec_sema, 0);
+  arc_init(&shared->arc, shared_proc_data_destroy);
+  return true;
+}
+
+void shared_proc_data_destroy(struct arc* arc) {
+  struct shared_proc_data* data = arc_data(arc, struct shared_proc_data, arc);
+  palloc_free_page(data->cmd_line);
+  free(data);
 }
 
 /* We load ELF binaries.  The following definitions are taken
