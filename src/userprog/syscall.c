@@ -11,6 +11,8 @@
 #include "threads/vaddr.h"
 #include "userprog/process.h"
 #include "userprog/syscall.h"
+#include "filesys/filesys.h"
+#include "filesys/file.h"
 
 #define SYSCALL_MAX_NARGS 5
 
@@ -38,6 +40,7 @@ static uint32_t sc_halt(struct intr_frame* f, uint32_t* args) NO_RETURN;
 static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) NO_RETURN;
 static uint32_t sc_exec(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_wait(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_create(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
 
 struct syscall_desc syscall_table[] = {
@@ -46,6 +49,7 @@ struct syscall_desc syscall_table[] = {
     {SYS_EXIT, sc_exit, 1},
     {SYS_EXEC, sc_exec, 1},
     {SYS_WAIT, sc_wait, 1},
+    {SYS_CREATE, sc_create, 2},
     {SYS_WRITE, sc_write, 3},
 };
 
@@ -96,6 +100,37 @@ static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
   // TODO: everything except stdout
 
   return size;
+}
+
+static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
+  bool success = true;
+  char* file_name;
+  unsigned size;
+  if (args[0] == NULL) {
+    success = false;
+  }
+  if (success) {
+    file_name = (char*) malloc(16); // max filesize
+    success = get_str((uint8_t*)args[0], file_name, 16); 
+    size = args[1];
+  }
+
+  if (file_name == NULL || !success) { // null or bad pointer
+    f->eax = -1;
+    thread_current()->pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    process_exit();
+
+    NOT_REACHED();
+  }
+
+  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+
+  sema_down(global_filesys_sema);
+  int output = (int) filesys_create(file_name, size);
+  sema_up(global_filesys_sema);
+
+  return output; 
 }
 
 // =============================

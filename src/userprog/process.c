@@ -25,7 +25,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore temporary;
+static struct semaphore global_filesys_sema;
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
@@ -47,10 +47,11 @@ void userprog_init(void) {
   t->pcb = calloc(sizeof(struct process), 1);
   success = t->pcb != NULL;
 
-  list_init(&t->pcb->children_shared);
-
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
+
+  list_init(&t->pcb->children_shared);
+  sema_init(&global_filesys_sema, 1); // init with 1, filesys has not been initialized yet so no file access can happen
 }
 
 /* Starts a new thread running a user program loaded from
@@ -58,7 +59,6 @@ void userprog_init(void) {
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
 int process_execute(const char* cmd_line) {
-  // sema_init(&temporary, 0);
 
   /* Make a copy of CMD_LINE.
      Otherwise there's a race between the caller and load(). */
@@ -110,6 +110,8 @@ static void start_process(void* _data) {
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, arg, sizeof t->name);
     list_init(&t->pcb->children_shared);
+    t->pcb->next_fd = 3;
+    t->pcb->global_filesys_sema = &global_filesys_sema;
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -118,7 +120,20 @@ static void start_process(void* _data) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(arg, &if_.eip, &if_.esp);
+
+    // need to acquire global filesys lock here and deny write perms to the executable at arg
+    sema_down(&global_filesys_sema);
+    struct file* executable = filesys_open(arg);
+    if (executable != NULL) { 
+      file_deny_write(executable); 
+      file_close(executable);
+    }
+    sema_up(&global_filesys_sema);
+
+    if (executable == NULL) // if deny_write fails, don't allow unsafe executable to be run
+      success = false;
+    else
+      success = load(arg, &if_.eip, &if_.esp);
   }
 
   if (success) {
@@ -168,7 +183,6 @@ static void start_process(void* _data) {
   /* Clean up. Exit on failure or jump to userspace */
   if (!success) {
     shared->pid = TID_ERROR;
-    // sema_up(&temporary);
     sema_up(&shared->exec_sema);
     arc_dec_ref(&shared->arc);
     thread_exit();
@@ -214,7 +228,6 @@ int process_wait(pid_t child_pid) {
   // remove child_shared from children_shared list
   list_remove(&child_shared->elem);
   arc_dec_ref(&child_shared->arc);
-  // sema_down(&temporary);
   return status;
 }
 
@@ -260,9 +273,15 @@ void process_exit(void) {
         struct shared_proc_data* child_shared = list_entry(e, struct shared_proc_data, elem);
         arc_dec_ref(&child_shared->arc);
        }
+  // reallow writes to executable
+  sema_down(&global_filesys_sema);
+  struct file* executable_file = filesys_open(pcb_to_free->process_name);
+  file_allow_write(executable_file);
+  file_close(executable_file);
+  sema_up(&global_filesys_sema);
+
   free(pcb_to_free);
 
-  // sema_up(&temporary);
   thread_exit();
 }
 

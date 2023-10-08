@@ -9,6 +9,7 @@
 // These defines will be used in Project 2: Multithreading
 #define MAX_STACK_PAGES (1 << 11)
 #define MAX_THREADS 127
+#define NOFILE 256
 
 /* PIDs and TIDs are the same type. PID should be
    the TID of the main thread of the process */
@@ -29,8 +30,12 @@ struct process {
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
 
-  struct shared_proc_data* shared;
-  struct list children_shared;
+  struct shared_proc_data* shared; /* Data shared between process and its parent for exec/wait syscalls */
+  struct list children_shared; /* List of children's process data (exec/wait) */
+
+  struct file* open_files[NOFILE]; /* Array of process's open files */
+  int next_fd; /* Next available index in open_files */
+  struct semaphore* global_filesys_sema; /* Pointer to the global filesys semaphore for file access synchronization */
 };
 
 struct shared_proc_data {
