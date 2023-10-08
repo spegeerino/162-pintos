@@ -71,16 +71,12 @@ struct shared_proc_data* process_execute(const char* cmd_line) {
 
   /* Create a new thread to execute CMD_LINE. */
   shared->pid = thread_create(cmd_line, PRI_DEFAULT, start_process, shared);
-  printf("%s TEST 1\n\n", cmd_line);
   if (shared->pid == TID_ERROR) {
     shared_proc_data_destroy(&shared->arc);
     return NULL;
   }
-  printf("%s TEST 2\n\n", cmd_line);
 
   sema_down(&shared->exec_sema);
-  printf("%s TEST 3\n\n", cmd_line);
-  printf("%p\n\n", shared);
   return shared;
 }
 
@@ -171,7 +167,6 @@ static void start_process(void* _data) {
   /* Clean up. Exit on failure or jump to userspace */
   if (!success) {
     shared->pid = TID_ERROR;
-    printf("TEST\n");
     sema_up(&temporary);
     sema_up(&shared->exec_sema);
     arc_dec_ref(&shared->arc);

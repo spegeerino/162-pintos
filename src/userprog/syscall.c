@@ -74,10 +74,8 @@ static uint32_t sc_exec(struct intr_frame* f UNUSED, uint32_t* args) {
     segfault(f);
 
   struct shared_proc_data* shared = process_execute(cmd_line);
-  if (shared == NULL || shared->pid == TID_ERROR) {
-    printf("\n\n\nTEST TEST\n\n\n");
+  if (shared == NULL || shared->pid == TID_ERROR)
     return -1;
-  }
 
   struct process* pcb = thread_current()->pcb;
   list_push_back(&pcb->children_shared, &shared->elem);
