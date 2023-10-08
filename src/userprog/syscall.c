@@ -27,11 +27,13 @@ struct syscall_desc {
 // ==============================
 
 static uint32_t sc_practice(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_halt(struct intr_frame* f, uint32_t* args) NO_RETURN;
 static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) NO_RETURN;
 static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
 
 struct syscall_desc syscall_table[] = {
     {SYS_PRACTICE, sc_practice, 1},
+    {SYS_HALT, sc_halt, 0},
     {SYS_EXIT, sc_exit, 1},
     {SYS_WRITE, sc_write, 3},
 };
@@ -40,6 +42,11 @@ static uint32_t sc_practice(struct intr_frame* f UNUSED, uint32_t* args) {
   int arg = args[0];
 
   return arg + 1;
+}
+
+static uint32_t sc_halt(struct intr_frame* f UNUSED, uint32_t* args UNUSED) {
+  shutdown_power_off();
+  NOT_REACHED();
 }
 
 static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) {
