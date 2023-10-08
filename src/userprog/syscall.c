@@ -1,15 +1,22 @@
-#include "userprog/syscall.h"
 #include <stdio.h>
+#include <string.h>
 #include <syscall-nr.h>
+#include "devices/shutdown.h"
+#include "threads/arc.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
+#include "threads/palloc.h"
+#include "threads/synch.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/process.h"
+#include "userprog/syscall.h"
 
 #define SYSCALL_MAX_NARGS 5
 
 static void syscall_handler(struct intr_frame*);
 static void segfault(struct intr_frame*);
+static bool get_str(const uint8_t* uaddr, uint8_t* buf, int maxsize);
 static bool get_bytes(const uint8_t* uaddr, uint8_t* buf, int size);
 static bool get_byte(const uint8_t* uaddr, uint8_t* buf);
 static bool put_byte(uint8_t* udst, uint8_t byte);
@@ -29,12 +36,14 @@ struct syscall_desc {
 static uint32_t sc_practice(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_halt(struct intr_frame* f, uint32_t* args) NO_RETURN;
 static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) NO_RETURN;
+static uint32_t sc_exec(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
 
 struct syscall_desc syscall_table[] = {
     {SYS_PRACTICE, sc_practice, 1},
     {SYS_HALT, sc_halt, 0},
     {SYS_EXIT, sc_exit, 1},
+    {SYS_EXEC, sc_exec, 1},
     {SYS_WRITE, sc_write, 3},
 };
 
@@ -57,6 +66,22 @@ static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) {
   process_exit();
 
   NOT_REACHED();
+}
+
+static uint32_t sc_exec(struct intr_frame* f UNUSED, uint32_t* args) {
+  char* cmd_line = palloc_get_page(0);
+  if (!get_str((uint8_t*)args[0], (uint8_t*)cmd_line, PGSIZE))
+    segfault(f);
+
+  struct shared_proc_data* shared = process_execute(cmd_line);
+  if (shared == NULL || shared->pid == TID_ERROR) {
+    printf("\n\n\nTEST TEST\n\n\n");
+    return -1;
+  }
+
+  struct process* pcb = thread_current()->pcb;
+  list_push_back(&pcb->children_shared, &shared->elem);
+  return shared->pid;
 }
 
 static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
@@ -123,6 +148,20 @@ static void segfault(struct intr_frame* f) {
 // =======
 // Helpers
 // =======
+
+/* Reads string starting at user virtual address UADDR into buf.
+   Returns true if successful,
+   false if a segfault occurred. */
+static bool get_str(const uint8_t* uaddr, uint8_t* buf, int maxsize) {
+  uint8_t tmp = 1;
+  for (int i = 0; tmp && i < maxsize; i++) {
+    if (!get_byte(uaddr++, &tmp)) {
+      return false;
+    }
+    *(buf++) = tmp;
+  }
+  return true;
+}
 
 /* Reads multiple bytes at user virtual address UADDR into buf.
    Returns true if successful,
