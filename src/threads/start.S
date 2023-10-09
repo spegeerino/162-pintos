@@ -28,7 +28,7 @@ start:
 	mov $0x2000, %ax
 	mov %ax, %ds
 	mov %ax, %es
-    fninit
+	fninit
 
 # Set string instructions to go upward.
 	cld

@@ -23,8 +23,8 @@ switch_threads:
 	#
 	# This stack frame must match the one set up by thread_create()
 	# in size.
-    subl $128, %esp
-    fsave (%esp)
+	subl $128, %esp
+	fsave (%esp)
 	pushl %ebx
 	pushl %ebp
 	pushl %esi
@@ -47,9 +47,9 @@ switch_threads:
 	popl %esi
 	popl %ebp
 	popl %ebx
-    frstor (%esp)
-    addl $128, %esp
-    ret
+	frstor (%esp)
+	addl $128, %esp
+	ret
 .endfunc
 
 .globl switch_entry
