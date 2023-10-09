@@ -76,6 +76,9 @@ struct syscall_desc syscall_table[] = {
     {SYS_COMPUTE_E, sc_compute_e, 1},
 };
 
+// ========================
+// Process control syscalls
+// ========================
 static uint32_t sc_practice(struct intr_frame* f UNUSED, uint32_t* args) {
   int arg = args[0];
 
@@ -111,15 +114,15 @@ static uint32_t sc_wait(struct intr_frame* f UNUSED, uint32_t* args) {
   return process_wait(child_pid);
 }
 
-//////////////////////////////
-/// File sys calls
-//////////////////////////////
+// =======================
+// File operation syscalls
+// =======================
 
-static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
+static uint32_t sc_create(struct intr_frame* f, uint32_t* args) {
   bool success = true;
-  char* file_name;
+  unsigned char* file_name;
   unsigned size;
-  if (args[0] == NULL) {
+  if ((void*)args[0] == NULL) {
     success = false;
   }
   if (success) {
@@ -128,7 +131,7 @@ static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
     size = args[1];
   }
 
-  if (file_name == NULL || !success) { // null or bad pointer
+  if (!success || file_name == NULL) { // null or bad pointer
     f->eax = -1;
     thread_current()->pcb->shared->exit_status = -1;
     printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
@@ -140,7 +143,7 @@ static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
   struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
 
   sema_down(global_filesys_sema);
-  int output = (int)filesys_create(file_name, size);
+  int output = (int)filesys_create((char*)file_name, size);
   sema_up(global_filesys_sema);
 
   return output;
@@ -330,6 +333,45 @@ static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
   return file_write(thread_current()->pcb->open_files[fd], buffer, size);
 }
 
+static uint32_t sc_seek(struct intr_frame* f, uint32_t* args) {
+  int fd = args[0];
+  int position = args[1];
+  struct process* pcb = thread_current()->pcb;
+  bool success = fd >= 3 && fd < NOFILE; // fail if fd is out of range
+  success = success && position >= 0;
+  struct file* file = NULL;
+  if (success) {
+    file = pcb->open_files[fd];
+    success = file != NULL; // fail if fd is not currently open
+  }
+  if (!success) {
+    f->eax = -1;
+    pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", pcb->process_name, -1);
+    process_exit();
+  }
+  file_seek(file, (unsigned)position);
+  return 0;
+}
+
+static uint32_t sc_tell(struct intr_frame* f, uint32_t* args) {
+  int fd = args[0];
+  struct process* pcb = thread_current()->pcb;
+  bool success = fd >= 3 && fd < NOFILE; // fail if fd is out of range
+  struct file* file = NULL;
+  if (success) {
+    file = pcb->open_files[fd];
+    success = file != NULL; // fail if fd is not currently open
+  }
+  if (!success) {
+    f->eax = -1;
+    pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", pcb->process_name, -1);
+    process_exit();
+  }
+  return file_tell(file);
+}
+
 // args are: fd
 static uint32_t sc_close(struct intr_frame* f UNUSED, uint32_t* args) {
   bool success = true;
@@ -367,7 +409,9 @@ static uint32_t sc_close(struct intr_frame* f UNUSED, uint32_t* args) {
   return;
 }
 
-// Floating Point Operation Syscall(s)
+// ================================
+// Floating point operation syscall
+// ================================
 
 static uint32_t sc_compute_e(struct intr_frame* f UNUSED, uint32_t* args) {
   int n = args[0];

@@ -30,12 +30,14 @@ struct process {
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
 
-  struct shared_proc_data* shared; /* Data shared between process and its parent for exec/wait syscalls */
+  struct shared_proc_data*
+      shared; /* Data shared between process and its parent for exec/wait syscalls */
   struct list children_shared; /* List of children's process data (exec/wait) */
 
   struct file* open_files[NOFILE]; /* Array of process's open files */
-  int next_fd; /* Next available index in open_files */
-  struct semaphore* global_filesys_sema; /* Pointer to the global filesys semaphore for file access synchronization */
+  int next_fd;                     /* Next available index in open_files */
+  struct semaphore*
+      global_filesys_sema; /* Pointer to the global filesys semaphore for file access synchronization */
 };
 
 struct shared_proc_data {
@@ -44,7 +46,7 @@ struct shared_proc_data {
   struct semaphore exec_sema;
   struct semaphore wait_sema;
   int exit_status;
-  
+
   struct list_elem elem;
   struct arc arc;
 };
