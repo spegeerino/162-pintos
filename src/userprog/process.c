@@ -133,10 +133,9 @@ static void start_process(void* _data) {
     if (executable == NULL) // if deny_write fails, don't allow unsafe executable to be run
       success = false;
     else {
-      uint32_t temp[32];
-    asm volatile("fsave (%[temp]); fninit; fsave (%[fpu_addr]); frstor (%[temp]);": : [fpu_addr]"g"(&(if_.fpu_state)), [temp]"g"(&(temp)): "memory");
-
-      success = load(arg, &if_.eip, &if_.esp);}
+      init_fpu_state(if_.fpu_state);
+      success = load(arg, &if_.eip, &if_.esp);
+    }
   }
 
   if (success) {

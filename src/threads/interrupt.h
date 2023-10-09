@@ -19,21 +19,19 @@ enum intr_level intr_disable(void);
 struct intr_frame {
   /* Pushed by intr_entry in intr-stubs.S.
        These are the interrupted task's saved registers. */
-  uint32_t edi;       /* Saved EDI. */
-  uint32_t esi;       /* Saved ESI. */
-  uint32_t ebp;       /* Saved EBP. */
-  uint32_t esp_dummy; /* Not used. */
-  uint32_t ebx;       /* Saved EBX. */
-  uint32_t edx;       /* Saved EDX. */
-  uint32_t ecx;       /* Saved ECX. */
-  uint32_t eax;       /* Saved EAX. */
-  uint16_t gs, : 16;  /* Saved GS segment register. */
-  uint16_t fs, : 16;  /* Saved FS segment register. */
-  uint16_t es, : 16;  /* Saved ES segment register. */
-  uint16_t ds, : 16;  /* Saved DS segment register. */
-  /* Pushed by TODO 
-        These are used to save and restore the FPU state.*/
-  uint32_t fpu_state[32]; /* FPU state */
+  uint32_t edi;           /* Saved EDI. */
+  uint32_t esi;           /* Saved ESI. */
+  uint32_t ebp;           /* Saved EBP. */
+  uint32_t esp_dummy;     /* Not used. */
+  uint32_t ebx;           /* Saved EBX. */
+  uint32_t edx;           /* Saved EDX. */
+  uint32_t ecx;           /* Saved ECX. */
+  uint32_t eax;           /* Saved EAX. */
+  uint16_t gs, : 16;      /* Saved GS segment register. */
+  uint16_t fs, : 16;      /* Saved FS segment register. */
+  uint16_t es, : 16;      /* Saved ES segment register. */
+  uint16_t ds, : 16;      /* Saved DS segment register. */
+  uint32_t fpu_state[32]; /* Saved FPU state */
 
   /* Pushed by intrNN_stub in intr-stubs.S. */
   uint32_t vec_no; /* Interrupt vector number. */

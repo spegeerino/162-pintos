@@ -18,8 +18,8 @@
 .func intr_entry
 intr_entry:
 	/* Save caller's registers. */
-    subl $128, %esp
-    fsave (%esp)
+	subl $128, %esp
+	fsave (%esp)
 	pushl %ds
 	pushl %es
 	pushl %fs
@@ -57,8 +57,8 @@ intr_exit:
 	popl %fs
 	popl %es
 	popl %ds
-    frstor (%esp)
-    addl $128, %esp
+	frstor (%esp)
+	addl $128, %esp
         /* Discard `struct intr_frame' vec_no, error_code,
            frame_pointer members. */
 	addl $12, %esp

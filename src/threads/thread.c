@@ -205,11 +205,9 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   sf = alloc_frame(t, sizeof *sf);
   sf->eip = switch_entry;
   sf->ebp = 0;
-//    asm volatile("subl $108, %%esp; fsave (%%esp); fninit; fsave (%[fpu_addr]); frstor (%%esp); addl $108, %%esp;": : [fpu_addr]"g"(&(sf -> fpu_state)): "memory");
 
-
-  uint32_t temp[32];
-  asm volatile("fsave (%[temp]); fninit; fsave (%[fpu_addr]); frstor (%[temp]);": : [fpu_addr]"g"(&(sf -> fpu_state)), [temp]"g"(&(temp)): "memory");
+  // Initialize the floating point registers for the new thread.
+  init_fpu_state(sf->fpu_state);
 
   /* Add to run queue. */
   thread_unblock(t);
@@ -233,7 +231,7 @@ void thread_block(void) {
 
 /* Places a thread on the ready structure appropriate for the
    current active scheduling policy.
-   
+
    This function must be called with interrupts turned off. */
 static void thread_enqueue(struct thread* t) {
   ASSERT(intr_get_level() == INTR_OFF);
@@ -569,3 +567,24 @@ static tid_t allocate_tid(void) {
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof(struct thread, stack);
+
+/* Initializes floating point registers for a new thread or process
+   without losing the current fpu state. */
+void init_fpu_state(uint32_t* fpu_state) {
+  uint32_t temp[32];
+
+  asm volatile(
+      // Save current floating point registers into temp so we don't lose them
+      "fsave %0\n\t"
+
+      // Initialize new floating point registers and save to the stack frame
+      "fninit\n\t"
+      "fsave %1\n\t"
+
+      // Save current floating point registers into temp
+      "frstor %0;"
+
+      // Pass temp and sf->fpu_state as memory addresses for input
+      :
+      : "m"(temp), "m"(*fpu_state));
+}
