@@ -140,11 +140,11 @@ static uint32_t sc_create(struct intr_frame* f, uint32_t* args) {
     NOT_REACHED();
   }
 
-  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+  struct process* pcb = thread_current()->pcb;
 
-  sema_down(global_filesys_sema);
+  lock_acquire(pcb->global_filesys_lock);
   int output = (int)filesys_create((char*)file_name, size);
-  sema_up(global_filesys_sema);
+  lock_release(pcb->global_filesys_lock);
 
   return output;
 }
@@ -170,11 +170,11 @@ static uint32_t sc_remove(struct intr_frame* f UNUSED, uint32_t* args) {
   }
 
   // remove file, using global lock on file operations to avoid races
-  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+  struct process* pcb = thread_current()->pcb;
 
-  sema_down(global_filesys_sema);
+  lock_acquire(pcb->global_filesys_lock);
   int output = (int)filesys_remove(file_name);
-  sema_up(global_filesys_sema);
+  lock_release(pcb->global_filesys_lock);
 
   return output;
 }
@@ -209,11 +209,11 @@ static uint32_t sc_open(struct intr_frame* f UNUSED, uint32_t* args) {
           2)); // a bit odd syntax, but basically this increments by 1 unless equal to NOFILE - 1, in which case sets to be 2.
   }
 
-  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+  struct process* pcb = thread_current()->pcb;
 
-  sema_down(global_filesys_sema);
+  lock_acquire(pcb->global_filesys_lock);
   struct file* output = filesys_open(file_name);
-  sema_up(global_filesys_sema);
+  lock_release(pcb->global_filesys_lock);
 
   if (output == NULL) {
     return -1;
@@ -252,12 +252,12 @@ static uint32_t sc_filesize(struct intr_frame* f UNUSED, uint32_t* args) {
     return -1;
   }
 
-  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+  struct process* pcb = thread_current()->pcb;
 
+  lock_acquire(pcb->global_filesys_lock);
   // call the file function
-  sema_down(global_filesys_sema);
   off_t output = file_length(thread_current()->pcb->open_files[fd]);
-  sema_up(global_filesys_sema);
+  lock_release(pcb->global_filesys_lock);
 
   return (int)output;
 }
@@ -396,12 +396,12 @@ static uint32_t sc_close(struct intr_frame* f UNUSED, uint32_t* args) {
     NOT_REACHED();
   }
 
-  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+  struct process* pcb = thread_current()->pcb;
 
+  lock_acquire(pcb->global_filesys_lock);
   // closes the file; this function also frees everything
-  sema_down(global_filesys_sema);
   file_close(thread_current()->pcb->open_files[fd]);
-  sema_up(global_filesys_sema);
+  lock_release(pcb->global_filesys_lock);
 
   // re-references the entry in the fd table to NULL
   thread_current()->pcb->open_files[fd] = NULL;

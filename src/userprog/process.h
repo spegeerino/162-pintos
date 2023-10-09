@@ -35,9 +35,8 @@ struct process {
   struct list children_shared; /* List of children's process data (exec/wait) */
 
   struct file* open_files[NOFILE]; /* Array of process's open files */
-  int next_fd;                     /* Next available index in open_files */
-  struct semaphore*
-      global_filesys_sema; /* Pointer to the global filesys semaphore for file access synchronization */
+  int next_fd; /* Next available index in open_files */
+  struct lock* global_filesys_lock; /* Pointer to the global filesys semaphore for file access synchronization */
 };
 
 struct shared_proc_data {

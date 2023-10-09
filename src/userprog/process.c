@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "devices/shutdown.h"
 #include "list.h"
 #include "stdbool.h"
 #include "stddef.h"
@@ -25,10 +26,12 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore global_filesys_sema;
+static struct lock global_filesys_lock;
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
+static bool setup_pcb(struct shared_proc_data* shared);
+static void setup_args(struct intr_frame* if_, char* prog_name, char** saveptr);
 bool setup_thread(void (**eip)(void), void** esp);
 
 /* Initializes user programs in the system by ensuring the main
@@ -51,8 +54,7 @@ void userprog_init(void) {
   ASSERT(success);
 
   list_init(&t->pcb->children_shared);
-  sema_init(&global_filesys_sema,
-            1); // init with 1, filesys has not been initialized yet so no file access can happen
+  lock_init(&global_filesys_lock);
 
   // want to reserve fd 0 and 1 for stdin and out.
   // note that there are not actually files there, just abstractions
@@ -90,112 +92,31 @@ int process_execute(const char* cmd_line) {
    running. */
 static void start_process(void* _data) {
   struct shared_proc_data* shared = _data;
-  arc_inc_ref(&shared->arc);
-
-  char* saveptr;
-  char* arg = strtok_r(shared->cmd_line, " ", &saveptr);
-
   struct thread* t = thread_current();
   struct intr_frame if_;
-  bool success, pcb_success;
 
-  /* Allocate process control block */
-  struct process* new_pcb = calloc(1, sizeof(struct process));
-  success = pcb_success = new_pcb != NULL;
+  /* Start argument parsing (need program name to put into PCB) */
+  char* saveptr;
+  char* arg = strtok_r(shared->cmd_line, " ", &saveptr);
+  strlcpy(t->name, arg, sizeof t->name);
 
-  /* Initialize process control block */
-  if (success) {
-    // Ensure that timer_interrupt() -> schedule() -> process_activate()
-    // does not try to activate our uninitialized pagedir
-    new_pcb->pagedir = NULL;
-    t->pcb = new_pcb;
+  /* Setup process control block */
+  if (!setup_pcb(shared))
+    goto cleanup;
 
-    // Continue initializing the PCB as normal
-    t->pcb->shared = shared;
-    t->pcb->main_thread = t;
-    strlcpy(t->pcb->process_name, arg, sizeof t->name);
-    list_init(&t->pcb->children_shared);
-    t->pcb->next_fd = 3;
-    t->pcb->global_filesys_sema = &global_filesys_sema;
-  }
+  /* Initialize interrupt frame */
+  memset(&if_, 0, sizeof if_);
+  if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
+  if_.cs = SEL_UCSEG;
+  if_.eflags = FLAG_IF | FLAG_MBS;
+  init_fpu_state(if_.fpu_state);
 
-  /* Initialize interrupt frame and load executable. */
-  if (success) {
-    memset(&if_, 0, sizeof if_);
-    if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
-    if_.cs = SEL_UCSEG;
-    if_.eflags = FLAG_IF | FLAG_MBS;
+  /* Load executable */
+  if (!load(arg, &if_.eip, &if_.esp))
+    goto cleanup_pcb;
 
-    // need to acquire global filesys lock here and deny write perms to the executable at arg
-    sema_down(&global_filesys_sema);
-    struct file* executable = filesys_open(arg);
-    if (executable != NULL) {
-      file_deny_write(executable);
-      file_close(executable);
-    }
-    sema_up(&global_filesys_sema);
-
-    if (executable == NULL) // if deny_write fails, don't allow unsafe executable to be run
-      success = false;
-    else {
-      init_fpu_state(if_.fpu_state);
-      success = load(arg, &if_.eip, &if_.esp);
-    }
-  }
-
-  if (success) {
-    char* it = (char*)if_.esp;
-
-    // copy each argument to the user stack
-    for (; arg != NULL; arg = strtok_r(NULL, " ", &saveptr)) {
-      size_t arg_size = strlen(arg) + 1;
-      it -= arg_size;
-      strlcpy(it, arg, arg_size);
-    }
-
-    int argc = 0;
-    char** argv = (char**)it - 1;
-    *argv = NULL; // argv[argc] must be null
-
-    for (; it != if_.esp; it += strlen(it) + 1) {
-      *(--argv) = it;
-      argc++;
-    }
-
-    // set stack to bottom of argv, and add padding to align
-    if_.esp = (void*)((uintptr_t)argv & -16);
-    if_.esp -= 8;
-
-    // push argc and argv to stack
-    if_.esp -= sizeof(char**);
-    *((char***)if_.esp) = argv;
-
-    if_.esp -= sizeof(int);
-    *((int*)if_.esp) = argc;
-
-    // push dummy return address
-    if_.esp -= sizeof(void*);
-  }
-
-  /* Handle failure with succesful PCB malloc. Must free the PCB */
-  if (!success && pcb_success) {
-    // Avoid race where PCB is freed before t->pcb is set to NULL
-    // If this happens, then an unfortuantely timed timer interrupt
-    // can try to activate the pagedir, but it is now freed memory
-    struct process* pcb_to_free = t->pcb;
-    t->pcb = NULL;
-    free(pcb_to_free);
-  }
-
-  /* Clean up. Exit on failure or jump to userspace */
-  if (!success) {
-    shared->pid = TID_ERROR;
-    sema_up(&shared->exec_sema);
-    arc_dec_ref(&shared->arc);
-    thread_exit();
-  }
-
-  sema_up(&shared->exec_sema);
+  /* Parse arguments onto the user stack */
+  setup_args(&if_, arg, &saveptr);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -203,8 +124,25 @@ static void start_process(void* _data) {
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
+  sema_up(&shared->exec_sema);
   asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&if_) : "memory");
   NOT_REACHED();
+
+/* Handle failure with succesful PCB malloc. Must free the PCB */
+cleanup_pcb:;
+  // Avoid race where PCB is freed before t->pcb is set to NULL
+  // If this happens, then an unfortuantely timed timer interrupt
+  // can try to activate the pagedir, but it is now freed memory
+  arc_dec_ref(&shared->arc);
+  struct process* pcb_to_free = t->pcb;
+  t->pcb = NULL;
+  free(pcb_to_free);
+
+/* Clean up. Exit on failure or jump to userspace */
+cleanup:;
+  shared->pid = TID_ERROR;
+  sema_up(&shared->exec_sema);
+  thread_exit();
 }
 
 /* Waits for process with PID child_pid to die and returns its exit status.
@@ -285,11 +223,11 @@ void process_exit(void) {
     arc_dec_ref(&child_shared->arc);
   }
   // reallow writes to executable
-  sema_down(&global_filesys_sema);
+  lock_acquire(&global_filesys_lock);
   struct file* executable_file = filesys_open(pcb_to_free->process_name);
   file_allow_write(executable_file);
   file_close(executable_file);
-  sema_up(&global_filesys_sema);
+  lock_release(&global_filesys_lock);
 
   free(pcb_to_free);
 
@@ -328,6 +266,77 @@ void shared_proc_data_destroy(struct arc* arc) {
   struct shared_proc_data* data = arc_data(arc, struct shared_proc_data, arc);
   palloc_free_page(data->cmd_line);
   free(data);
+}
+
+/* Allocates and initializes a PCB for the current thread.
+   Returns true if successful, false otherwise. */
+static bool setup_pcb(struct shared_proc_data* shared) {
+  struct thread* t = thread_current();
+  struct process* new_pcb = malloc(sizeof(struct process));
+  if (new_pcb == NULL)
+    return false;
+
+  // Ensure that timer_interrupt() -> schedule() -> process_activate()
+  // does not try to activate our uninitialized pagedir
+  new_pcb->pagedir = NULL;
+  t->pcb = new_pcb;
+
+  /* Initialize the PCB as normal */
+  t->pcb->main_thread = t;
+  strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+  memset(t->pcb->open_files, 0, sizeof(t->pcb->open_files));
+
+  /* Take ownership of shared data */
+  arc_inc_ref(&shared->arc);
+  t->pcb->shared = shared;
+
+  /* Set up rest of PCB */
+  list_init(&t->pcb->children_shared);
+  t->pcb->next_fd = 3;
+  t->pcb->global_filesys_lock = &global_filesys_lock;
+
+  return true;
+}
+
+static void intr_frame_pushl(struct intr_frame* if_, void* val) {
+  if_->esp -= 4;
+  *(uint32_t*)if_->esp = (uint32_t)val;
+}
+
+/* Parses arguments from the command line to the user stack */
+static void setup_args(struct intr_frame* if_, char* prog_name, char** saveptr) {
+  char* arg = prog_name;
+  void* top = if_->esp;
+  int argc = 0;
+
+  /* First argument is already parsed. Continue parsing arguments
+     and copying to the user stack in reverse order. Make sure to
+     decrement the stack pointer. */
+  for (; arg != NULL; arg = strtok_r(NULL, " ", saveptr)) {
+    size_t arg_size = strlen(arg) + 1;
+    if_->esp -= arg_size;
+    strlcpy(if_->esp, arg, arg_size);
+  }
+
+  /* Now we place pointers to each arg on the user stack. We are
+     going in reverse order again, but reversing twice leaves the
+     args in the correct order. Also, argv[argc] must be NULL. */
+  char* it = if_->esp;
+  intr_frame_pushl(if_, NULL);
+  for (; it != top; it += strlen(it) + 1) {
+    intr_frame_pushl(if_, it);
+    argc++;
+  }
+
+  /* Pad esp so that the simulated call is the right alignment */
+  char* argv = if_->esp;
+  if_->esp = (void*)((uintptr_t)argv & -16);
+  if_->esp -= 8;
+
+  /* Finally, we can push argv, argc, dummy rip to simulate call */
+  intr_frame_pushl(if_, argv);
+  intr_frame_pushl(if_, (void*)argc);
+  intr_frame_pushl(if_, NULL);
 }
 
 /* We load ELF binaries.  The following definitions are taken
@@ -414,6 +423,9 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
     goto done;
   process_activate();
 
+  /* Acquire global filesystem lock */
+  lock_acquire(&global_filesys_lock);
+
   /* Open executable file. */
   file = filesys_open(file_name);
   if (file == NULL) {
@@ -486,11 +498,15 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   /* Start address. */
   *eip = (void (*)(void))ehdr.e_entry;
 
+  /* Deny writing to the file while executable is loaded (allow at exit) */
+  file_deny_write(file);
+
   success = true;
 
 done:
   /* We arrive here whether the load is successful or not. */
   file_close(file);
+  lock_release(&global_filesys_lock);
   return success;
 }
 
