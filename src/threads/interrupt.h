@@ -31,6 +31,9 @@ struct intr_frame {
   uint16_t fs, : 16;  /* Saved FS segment register. */
   uint16_t es, : 16;  /* Saved ES segment register. */
   uint16_t ds, : 16;  /* Saved DS segment register. */
+  /* Pushed by TODO 
+        These are used to save and restore the FPU state.*/
+  uint32_t fpu_state[32]; /* FPU state */
 
   /* Pushed by intrNN_stub in intr-stubs.S. */
   uint32_t vec_no; /* Interrupt vector number. */

@@ -118,6 +118,9 @@ static void start_process(void* _data) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
+  
+    uint32_t temp[32];
+    asm volatile("fsave (%[temp]); fninit; fsave (%[fpu_addr]); frstor (%[temp]);": : [fpu_addr]"g"(&(if_.fpu_state)), [temp]"g"(&(temp)): "memory");
     success = load(arg, &if_.eip, &if_.esp);
   }
 

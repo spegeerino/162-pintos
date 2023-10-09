@@ -11,6 +11,7 @@
 #include "threads/vaddr.h"
 #include "userprog/process.h"
 #include "userprog/syscall.h"
+#include "lib/float.h"
 
 #define SYSCALL_MAX_NARGS 5
 
@@ -39,6 +40,7 @@ static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) NO_RETURN;
 static uint32_t sc_exec(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_wait(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_compute_e(struct intr_frame* f, uint32_t* args);
 
 struct syscall_desc syscall_table[] = {
     {SYS_PRACTICE, sc_practice, 1},
@@ -47,6 +49,7 @@ struct syscall_desc syscall_table[] = {
     {SYS_EXEC, sc_exec, 1},
     {SYS_WAIT, sc_wait, 1},
     {SYS_WRITE, sc_write, 3},
+    {SYS_COMPUTE_E, sc_compute_e, 1},
 };
 
 static uint32_t sc_practice(struct intr_frame* f UNUSED, uint32_t* args) {
@@ -96,6 +99,15 @@ static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
   // TODO: everything except stdout
 
   return size;
+}
+
+static uint32_t sc_compute_e(struct intr_frame* f UNUSED, uint32_t* args) {
+    int n = args[0];
+    if (n < 0) {
+        return -1;
+    }
+    return sys_sum_to_e(n);
+
 }
 
 // =============================

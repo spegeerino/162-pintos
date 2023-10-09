@@ -205,6 +205,11 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   sf = alloc_frame(t, sizeof *sf);
   sf->eip = switch_entry;
   sf->ebp = 0;
+//    asm volatile("subl $108, %%esp; fsave (%%esp); fninit; fsave (%[fpu_addr]); frstor (%%esp); addl $108, %%esp;": : [fpu_addr]"g"(&(sf -> fpu_state)): "memory");
+
+
+  uint32_t temp[32];
+  asm volatile("fsave (%[temp]); fninit; fsave (%[fpu_addr]); frstor (%[temp]);": : [fpu_addr]"g"(&(sf -> fpu_state)), [temp]"g"(&(temp)): "memory");
 
   /* Add to run queue. */
   thread_unblock(t);
