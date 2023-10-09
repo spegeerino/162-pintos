@@ -111,6 +111,7 @@ static uint32_t sc_compute_e(struct intr_frame* f UNUSED, uint32_t* args) {
         return -1;
     }
     return sys_sum_to_e(n);
+}
 
 static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
   bool success = true;
