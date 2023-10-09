@@ -106,6 +106,20 @@ struct list {
 #define list_entry(LIST_ELEM, STRUCT, MEMBER)                                                      \
   ((STRUCT*)((uint8_t*)&(LIST_ELEM)->next - offsetof(STRUCT, MEMBER.next)))
 
+#define list_find(LIST, STRUCT, MEMBER, ENTRY, COND)                                               \
+  ({                                                                                               \
+    STRUCT* retval = NULL;                                                                         \
+    for (struct list_elem* elem = list_begin(LIST); elem != list_end(LIST);                        \
+         elem = list_next(elem)) {                                                                 \
+      STRUCT* ENTRY = list_entry(elem, STRUCT, MEMBER);                                            \
+      if (COND) {                                                                                  \
+        retval = ENTRY;                                                                            \
+        break;                                                                                     \
+      }                                                                                            \
+    }                                                                                              \
+    retval;                                                                                        \
+  })
+
 /* List initialization.
 
    A list may be initialized by calling list_init():

@@ -120,12 +120,12 @@ static void start_process(void* _data) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-  
+
     // need to acquire global filesys lock here and deny write perms to the executable at arg
     sema_down(&global_filesys_sema);
     struct file* executable = filesys_open(arg);
-    if (executable != NULL) { 
-      file_deny_write(executable); 
+    if (executable != NULL) {
+      file_deny_write(executable);
       file_close(executable);
     }
     sema_up(&global_filesys_sema);
@@ -133,7 +133,7 @@ static void start_process(void* _data) {
     if (executable == NULL) // if deny_write fails, don't allow unsafe executable to be run
       success = false;
     else {
-    uint32_t temp[32];
+      uint32_t temp[32];
     asm volatile("fsave (%[temp]); fninit; fsave (%[fpu_addr]); frstor (%[temp]);": : [fpu_addr]"g"(&(if_.fpu_state)), [temp]"g"(&(temp)): "memory");
 
       success = load(arg, &if_.eip, &if_.esp);}
@@ -214,23 +214,27 @@ static void start_process(void* _data) {
    does nothing. */
 int process_wait(pid_t child_pid) {
   struct process* pcb = thread_current()->pcb;
-  struct list_elem* e;
-  struct shared_proc_data* child_shared = NULL;
-  // check for child with matching pid
-  for (e = list_begin(&pcb->children_shared); e != list_end(&pcb->children_shared); e = list_next(e)) {
-    child_shared = list_entry(e, struct shared_proc_data, elem);
 
-    if (child_shared->pid == child_pid) // not null, because of arc
-      break;
-  }
-  if (child_shared == NULL) { // no child with matching pid (or has been destroyed already)
+  // Loop through the PCB's child_shared to find the child's shared_proc_data
+  // All elements in the list are guaranteed to be null because the list holds
+  // a reference to the arc. If there is no match, it is invalid or has been
+  // waited on already, so we return -1.
+  struct shared_proc_data* child_shared = list_find(&pcb->children_shared, struct shared_proc_data,
+                                                    elem, entry, entry->pid == child_pid);
+  if (child_shared == NULL)
     return -1;
-  }
+
+  // Wait for the child process to exit
   sema_down(&child_shared->wait_sema);
+
+  // We must save the status since it might be freed when we dec ref.
   int status = child_shared->exit_status;
-  // remove child_shared from children_shared list
+
+  // Remove child_shared from children_shared list and decrement the ref
+  // count. If this was the last ref, it will be freed.
   list_remove(&child_shared->elem);
   arc_dec_ref(&child_shared->arc);
+
   return status;
 }
 
@@ -273,9 +277,9 @@ void process_exit(void) {
   struct list_elem* e;
   for (e = list_begin(&pcb_to_free->children_shared); e != list_end(&pcb_to_free->children_shared);
        e = list_next(e)) {
-        struct shared_proc_data* child_shared = list_entry(e, struct shared_proc_data, elem);
-        arc_dec_ref(&child_shared->arc);
-       }
+    struct shared_proc_data* child_shared = list_entry(e, struct shared_proc_data, elem);
+    arc_dec_ref(&child_shared->arc);
+  }
   // reallow writes to executable
   sema_down(&global_filesys_sema);
   struct file* executable_file = filesys_open(pcb_to_free->process_name);
