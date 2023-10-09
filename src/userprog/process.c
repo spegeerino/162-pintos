@@ -95,7 +95,7 @@ static void start_process(void* _data) {
   bool success, pcb_success;
 
   /* Allocate process control block */
-  struct process* new_pcb = malloc(sizeof(struct process));
+  struct process* new_pcb = calloc(1, sizeof(struct process));
   success = pcb_success = new_pcb != NULL;
 
   /* Initialize process control block */

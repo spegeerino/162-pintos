@@ -42,6 +42,8 @@ static uint32_t sc_exec(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_wait(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_create(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_tell(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_seek(struct intr_frame* f, uint32_t* args);
 
 struct syscall_desc syscall_table[] = {
     {SYS_PRACTICE, sc_practice, 1},
@@ -51,8 +53,13 @@ struct syscall_desc syscall_table[] = {
     {SYS_WAIT, sc_wait, 1},
     {SYS_CREATE, sc_create, 2},
     {SYS_WRITE, sc_write, 3},
+    {SYS_TELL, sc_tell, 1},
+    {SYS_SEEK, sc_seek, 2}
 };
 
+// ========================
+// Process control syscalls
+// ========================
 static uint32_t sc_practice(struct intr_frame* f UNUSED, uint32_t* args) {
   int arg = args[0];
 
@@ -88,6 +95,41 @@ static uint32_t sc_wait(struct intr_frame* f UNUSED, uint32_t* args) {
   return process_wait(child_pid);
 }
 
+// =======================
+// File operation syscalls
+// =======================
+
+static uint32_t sc_create(struct intr_frame* f, uint32_t* args) {
+  bool success = true;
+  unsigned char* file_name;
+  unsigned size;
+  if ((void*)args[0] == NULL) {
+    success = false;
+  }
+  if (success) {
+    file_name = (char*) malloc(16); // max filesize
+    success = get_str((uint8_t*)args[0], file_name, 16); 
+    size = args[1];
+  }
+
+  if (!success || file_name == NULL ) { // null or bad pointer
+    f->eax = -1;
+    thread_current()->pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    process_exit();
+
+    NOT_REACHED();
+  }
+
+  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+
+  sema_down(global_filesys_sema);
+  int output = (int) filesys_create((char*) file_name, size);
+  sema_up(global_filesys_sema);
+
+  return output; 
+}
+
 static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
   int fd = args[0];
   void* buffer = (void*)args[1];
@@ -102,37 +144,44 @@ static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
   return size;
 }
 
-static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
-  bool success = true;
-  char* file_name;
-  unsigned size;
-  if (args[0] == NULL) {
-    success = false;
-  }
+static uint32_t sc_tell(struct intr_frame* f, uint32_t* args) {
+  int fd = args[0];
+  struct process* pcb = thread_current()->pcb;
+  bool success = fd >= 3 && fd < NOFILE; // fail if fd is out of range
+  struct file* file = NULL;
   if (success) {
-    file_name = (char*) malloc(16); // max filesize
-    success = get_str((uint8_t*)args[0], file_name, 16); 
-    size = args[1];
+    file = pcb->open_files[fd];
+    success = file != NULL; // fail if fd is not currently open
   }
-
-  if (file_name == NULL || !success) { // null or bad pointer
+  if (!success) {
     f->eax = -1;
-    thread_current()->pcb->shared->exit_status = -1;
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", pcb->process_name, -1);
     process_exit();
-
-    NOT_REACHED();
   }
-
-  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
-
-  sema_down(global_filesys_sema);
-  int output = (int) filesys_create(file_name, size);
-  sema_up(global_filesys_sema);
-
-  return output; 
+  return file_tell(file);
 }
 
+static uint32_t sc_seek(struct intr_frame* f, uint32_t* args) {
+  int fd = args[0];
+  int position = args[1];
+  struct process* pcb = thread_current()->pcb;
+  bool success = fd >= 3 && fd < NOFILE; // fail if fd is out of range
+  success = success && position >= 0; 
+  struct file* file = NULL;
+  if (success) {
+    file = pcb->open_files[fd];
+    success = file != NULL; // fail if fd is not currently open
+  }
+  if (!success) {
+    f->eax = -1;
+    pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", pcb->process_name, -1);
+    process_exit();
+  }
+  file_seek(file, (unsigned) position);
+  return 0;
+}
 // =============================
 // General syscall handler stuff
 // =============================
