@@ -41,18 +41,38 @@ static uint32_t sc_halt(struct intr_frame* f, uint32_t* args) NO_RETURN;
 static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) NO_RETURN;
 static uint32_t sc_exec(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_wait(struct intr_frame* f, uint32_t* args);
+
 static uint32_t sc_create(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_remove(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_open(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_filesize(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_read(struct intr_frame* f, uint32_t* args);
 static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_seek(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_tell(struct intr_frame* f, uint32_t* args);
+static uint32_t sc_close(struct intr_frame* f, uint32_t* args);
+
 static uint32_t sc_compute_e(struct intr_frame* f, uint32_t* args);
 
 struct syscall_desc syscall_table[] = {
+    // Process control syscalls
     {SYS_PRACTICE, sc_practice, 1},
     {SYS_HALT, sc_halt, 0},
     {SYS_EXIT, sc_exit, 1},
     {SYS_EXEC, sc_exec, 1},
     {SYS_WAIT, sc_wait, 1},
+
+    // file operation syscalls
     {SYS_CREATE, sc_create, 2},
+    {SYS_REMOVE, sc_remove, 1},
+    {SYS_OPEN, sc_open, 1},
+    {SYS_FILESIZE, sc_filesize, 1},
+    {SYS_READ, sc_read, 3},
     {SYS_WRITE, sc_write, 3},
+    {SYS_SEEK, sc_seek, 2},
+    {SYS_TELL, sc_tell, 1},
+    {SYS_CLOSE, sc_close, 1},
+
     {SYS_COMPUTE_E, sc_compute_e, 1},
 };
 
@@ -91,27 +111,9 @@ static uint32_t sc_wait(struct intr_frame* f UNUSED, uint32_t* args) {
   return process_wait(child_pid);
 }
 
-static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
-  int fd = args[0];
-  void* buffer = (void*)args[1];
-  unsigned size = args[2];
-
-  if (fd == 1) {
-    putbuf(buffer, size);
-  }
-
-  // TODO: everything except stdout
-
-  return size;
-}
-
-static uint32_t sc_compute_e(struct intr_frame* f UNUSED, uint32_t* args) {
-    int n = args[0];
-    if (n < 0) {
-        return -1;
-    }
-    return sys_sum_to_e(n);
-}
+//////////////////////////////
+/// File sys calls
+//////////////////////////////
 
 static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
   bool success = true;
@@ -121,8 +123,8 @@ static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
     success = false;
   }
   if (success) {
-    file_name = (char*) malloc(16); // max filesize
-    success = get_str((uint8_t*)args[0], file_name, 16); 
+    file_name = (char*)malloc(16); // max filesize
+    success = get_str((uint8_t*)args[0], file_name, 16);
     size = args[1];
   }
 
@@ -138,10 +140,241 @@ static uint32_t sc_create(struct intr_frame* f UNUSED, uint32_t* args) {
   struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
 
   sema_down(global_filesys_sema);
-  int output = (int) filesys_create(file_name, size);
+  int output = (int)filesys_create(file_name, size);
   sema_up(global_filesys_sema);
 
-  return output; 
+  return output;
+}
+
+static uint32_t sc_remove(struct intr_frame* f UNUSED, uint32_t* args) {
+  bool success = true;
+  char* file_name;
+  if (args[0] == NULL) {
+    success = false;
+  }
+  if (success) {
+    file_name = (char*)malloc(16); // max filesize
+    success = get_str((uint8_t*)args[0], file_name, 16);
+  }
+
+  if (file_name == NULL || !success) { // null or bad pointer
+    f->eax = -1;
+    thread_current()->pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    process_exit();
+
+    NOT_REACHED();
+  }
+
+  // remove file, using global lock on file operations to avoid races
+  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+
+  sema_down(global_filesys_sema);
+  int output = (int)filesys_remove(file_name);
+  sema_up(global_filesys_sema);
+
+  return output;
+}
+
+// args are: file name
+static uint32_t sc_open(struct intr_frame* f UNUSED, uint32_t* args) {
+  bool success = true;
+  char* file_name;
+  if (args[0] == NULL) {
+    success = false;
+  }
+  if (success) {
+    file_name = (char*)malloc(16); // max filesize
+    success = get_str((uint8_t*)args[0], file_name, 16);
+  }
+
+  if (file_name == NULL || !success) { // null or bad pointer
+    f->eax = -1;
+    thread_current()->pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    process_exit();
+
+    NOT_REACHED();
+  }
+
+  // finds next open entry in fd table, potentially
+  while (thread_current()->pcb->open_files[thread_current()->pcb->next_fd] != NULL) {
+    thread_current()->pcb->next_fd =
+        2 +
+        ((thread_current()->pcb->next_fd - 1) %
+         (NOFILE -
+          2)); // a bit odd syntax, but basically this increments by 1 unless equal to NOFILE - 1, in which case sets to be 2.
+  }
+
+  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+
+  sema_down(global_filesys_sema);
+  struct file* output = filesys_open(file_name);
+  sema_up(global_filesys_sema);
+
+  if (output == NULL) {
+    return -1;
+  }
+
+  // puts the created file* into the fd table
+  thread_current()->pcb->open_files[thread_current()->pcb->next_fd] = output;
+
+  return thread_current()->pcb->next_fd;
+}
+
+// args are: fd
+static uint32_t sc_filesize(struct intr_frame* f UNUSED, uint32_t* args) {
+  bool success = true;
+  if (args[0] == NULL) {
+    success = false;
+  }
+  int fd = args[0];
+  // malloc unnecessary as not creating new inode
+  //if (success) {
+  //  file_name = (char*) malloc(16); // max filesize
+  //  success = get_str((uint8_t*)args[0], file_name, 16);
+  //}
+
+  if (!success) { // null or bad pointer
+    f->eax = -1;
+    thread_current()->pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    process_exit();
+
+    NOT_REACHED();
+  }
+
+  // file descriptor corresponds to empty entry in fd table
+  if (fd < 0 || fd >= NOFILE || thread_current()->pcb->open_files[fd] == NULL) {
+    return -1;
+  }
+
+  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+
+  // call the file function
+  sema_down(global_filesys_sema);
+  off_t output = file_length(thread_current()->pcb->open_files[fd]);
+  sema_up(global_filesys_sema);
+
+  return (int)output;
+}
+
+// args: fd, buffer, size
+static uint32_t sc_read(struct intr_frame* f UNUSED, uint32_t* args) {
+  int fd = args[0];
+  void* buffer = (void*)args[1];
+  unsigned size = args[2];
+
+  bool success = true;
+
+  if (buffer >= (uint8_t*)PHYS_BASE) {
+    success = false;
+  }
+
+  if (!success) { // null or bad pointer
+    f->eax = -1;
+    thread_current()->pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    process_exit();
+
+    NOT_REACHED();
+  }
+
+  if (fd == 0) {
+    for (int i = 0; i < size; i++) {
+      int8_t input_char = input_getc();
+      ((char*)buffer)[i] = input_char;
+    }
+    return size;
+  }
+
+  // if fd doesn't correspond to opened file
+  if (fd < 0 || fd >= NOFILE || thread_current()->pcb->open_files[fd] == NULL) {
+    return -1;
+  }
+
+  return (uint32_t)file_read(thread_current()->pcb->open_files[fd], buffer, size);
+
+  //  return size;
+}
+
+static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
+  int fd = args[0];
+  void* buffer = (void*)args[1];
+  unsigned size = args[2];
+
+  bool success = true;
+
+  if (buffer >= (uint8_t*)PHYS_BASE) {
+    success = false;
+  }
+
+  if (!success) { // null or bad pointer
+    f->eax = -1;
+    thread_current()->pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    process_exit();
+
+    NOT_REACHED();
+  }
+
+  if (fd == 1) {
+    putbuf(buffer, size);
+  }
+
+  // if fd doesn't correspond to opened file
+  if (fd < 0 || fd >= NOFILE || thread_current()->pcb->open_files[fd] == NULL) {
+    return -1;
+  }
+
+  return file_write(thread_current()->pcb->open_files[fd], buffer, size);
+}
+
+// args are: fd
+static uint32_t sc_close(struct intr_frame* f UNUSED, uint32_t* args) {
+  bool success = true;
+  int fd;
+  if (args[0] == NULL || args[0] == 0 || args[0] == 1 || args[0] != (args[0] % NOFILE)) {
+    success = false;
+  }
+  fd = args[0];
+
+  // malloc unnecessary as not creating new inode
+  //if (success) {
+  //  file_name = (char*) malloc(16); // max filesize
+  //  success = get_str((uint8_t*)args[0], file_name, 16);
+  //}
+
+  if (!success) { // null or bad pointer
+    f->eax = -1;
+    thread_current()->pcb->shared->exit_status = -1;
+    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
+    process_exit();
+
+    NOT_REACHED();
+  }
+
+  struct semaphore* global_filesys_sema = thread_current()->pcb->global_filesys_sema;
+
+  // closes the file; this function also frees everything
+  sema_down(global_filesys_sema);
+  file_close(thread_current()->pcb->open_files[fd]);
+  sema_up(global_filesys_sema);
+
+  // re-references the entry in the fd table to NULL
+  thread_current()->pcb->open_files[fd] = NULL;
+
+  return;
+}
+
+// Floating Point Operation Syscall(s)
+
+static uint32_t sc_compute_e(struct intr_frame* f UNUSED, uint32_t* args) {
+  int n = args[0];
+  if (n < 0) {
+    return -1;
+  }
+  return sys_sum_to_e(n);
 }
 
 // =============================

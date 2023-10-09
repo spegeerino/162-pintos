@@ -51,7 +51,12 @@ void userprog_init(void) {
   ASSERT(success);
 
   list_init(&t->pcb->children_shared);
-  sema_init(&global_filesys_sema, 1); // init with 1, filesys has not been initialized yet so no file access can happen
+  sema_init(&global_filesys_sema,
+            1); // init with 1, filesys has not been initialized yet so no file access can happen
+
+  // want to reserve fd 0 and 1 for stdin and out.
+  // note that there are not actually files there, just abstractions
+  t->pcb->next_fd = 2;
 }
 
 /* Starts a new thread running a user program loaded from
