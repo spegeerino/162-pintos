@@ -1,9 +1,11 @@
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <syscall-nr.h>
 #include "devices/input.h"
 #include "devices/shutdown.h"
+#include "tests/filesys/base/syn-write.h"
 #include "threads/arc.h"
 #include "threads/interrupt.h"
 #include "threads/malloc.h"
@@ -29,128 +31,96 @@ static bool put_byte(uint8_t* udst, uint8_t byte);
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
-struct syscall_desc {
+// =============================
+// Helpers for defining syscalls
+// =============================
+
+struct syscall {
   uint32_t syscall_number;
-  uint32_t (*fun)(struct intr_frame* f, uint32_t* args);
-  int nargs;
+  void (*handler)(struct intr_frame* f, void* args);
+  size_t args_size;
 };
 
-// ==============================
-// Handlers for specific syscalls
-// ==============================
+// clang-format off
+#define __ARG_FIELDS(A,B,C,D,E,F,G,...) A; B; C; D; E; F; G;
+#define ARG_FIELDS(...) __ARG_FIELDS(__VA_ARGS__,,,,,,)
+#define ARG_STRUCT(...)
+// clang-format on
 
-static uint32_t sc_practice(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_halt(struct intr_frame* f, uint32_t* args) NO_RETURN;
-static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) NO_RETURN;
-static uint32_t sc_exec(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_wait(struct intr_frame* f, uint32_t* args);
-
-static uint32_t sc_create(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_remove(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_open(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_filesize(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_read(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_write(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_seek(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_tell(struct intr_frame* f, uint32_t* args);
-static uint32_t sc_close(struct intr_frame* f, uint32_t* args);
-
-static uint32_t sc_compute_e(struct intr_frame* f, uint32_t* args);
-
-struct syscall_desc syscall_table[] = {
-    // Process control syscalls
-    {SYS_PRACTICE, sc_practice, 1},
-    {SYS_HALT, sc_halt, 0},
-    {SYS_EXIT, sc_exit, 1},
-    {SYS_EXEC, sc_exec, 1},
-    {SYS_WAIT, sc_wait, 1},
-
-    // file operation syscalls
-    {SYS_CREATE, sc_create, 2},
-    {SYS_REMOVE, sc_remove, 1},
-    {SYS_OPEN, sc_open, 1},
-    {SYS_FILESIZE, sc_filesize, 1},
-    {SYS_READ, sc_read, 3},
-    {SYS_WRITE, sc_write, 3},
-    {SYS_SEEK, sc_seek, 2},
-    {SYS_TELL, sc_tell, 1},
-    {SYS_CLOSE, sc_close, 1},
-
-    {SYS_COMPUTE_E, sc_compute_e, 1},
-};
+#define SYSCALL_DEFINE(NAME, SYSCALL_NUMBER, INTR_FRAME, ARGS, ...)                                \
+  struct __##NAME##_args {                                                                         \
+    ARG_FIELDS(__VA_ARGS__)                                                                        \
+  };                                                                                               \
+  static uint32_t __##NAME##_impl(struct intr_frame* INTR_FRAME, struct __##NAME##_args* ARGS);    \
+  static void __##NAME##_handler(struct intr_frame* INTR_FRAME, void* args) {                      \
+    INTR_FRAME->eax = __##NAME##_impl(INTR_FRAME, args);                                           \
+  }                                                                                                \
+  struct syscall NAME = {SYSCALL_NUMBER, __##NAME##_handler, sizeof(struct __##NAME##_args)};      \
+  static uint32_t __##NAME##_impl(struct intr_frame* INTR_FRAME, struct __##NAME##_args* ARGS)
 
 // ========================
 // Process control syscalls
 // ========================
-static uint32_t sc_practice(struct intr_frame* f UNUSED, uint32_t* args) {
-  int arg = args[0];
-  return arg + 1;
-}
 
-static uint32_t sc_halt(struct intr_frame* f UNUSED, uint32_t* args UNUSED) {
+SYSCALL_DEFINE(sc_practice, SYS_PRACTICE, f, args, uint32_t value) { return args->value + 1; }
+
+SYSCALL_DEFINE(sc_halt, SYS_HALT, f, args) {
   shutdown_power_off();
   NOT_REACHED();
 }
 
-static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) {
-  int status = args[0];
-
-  thread_current()->pcb->shared->exit_status = status;
-  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, status);
+SYSCALL_DEFINE(sc_exit, SYS_EXIT, f, args, uint32_t status) {
+  thread_current()->pcb->shared->exit_status = args->status;
+  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args->status);
   process_exit();
 
   NOT_REACHED();
 }
 
-static uint32_t sc_exec(struct intr_frame* f, uint32_t* args) {
-  char* cmd_line = palloc_get_page(0);
-  if (!get_str((uint8_t*)args[0], (uint8_t*)cmd_line, PGSIZE))
+SYSCALL_DEFINE(sc_exec, SYS_EXEC, f, args, char* cmd_line) {
+  char* cl_copy = palloc_get_page(0);
+  if (!get_str((uint8_t*)args->cmd_line, (uint8_t*)cl_copy, PGSIZE))
     segfault(f);
 
-  return process_execute(cmd_line);
+  return process_execute(cl_copy);
 }
 
-static uint32_t sc_wait(struct intr_frame* f UNUSED, uint32_t* args) {
-  int child_pid = args[0];
-  return process_wait(child_pid);
-}
+SYSCALL_DEFINE(sc_wait, SYS_WAIT, f, args, pid_t pid) { return process_wait(args->pid); }
 
 // =======================
 // File operation syscalls
 // =======================
 
-static uint32_t sc_create(struct intr_frame* f, uint32_t* args) {
-  char file_name[16];
-  if (!get_str((uint8_t*)args[0], (uint8_t*)file_name, 16))
+SYSCALL_DEFINE(sc_create, SYS_CREATE, f, args, char* file_name, unsigned initial_size) {
+  char fn_copy[16];
+  if (!get_str((uint8_t*)args->file_name, (uint8_t*)fn_copy, 16))
     segfault(f);
-  unsigned size = args[1];
 
   struct process* pcb = thread_current()->pcb;
   lock_acquire(pcb->global_filesys_lock);
-  uint32_t output = filesys_create(file_name, size);
+  uint32_t output = filesys_create(fn_copy, args->initial_size);
   lock_release(pcb->global_filesys_lock);
 
   return output;
 }
 
-static uint32_t sc_remove(struct intr_frame* f UNUSED, uint32_t* args) {
-  char file_name[16];
-  if (!get_str((uint8_t*)args[0], (uint8_t*)file_name, 16))
+SYSCALL_DEFINE(sc_remove, SYS_REMOVE, f, args, char* file_name) {
+  char fn_copy[16];
+  if (!get_str((uint8_t*)args->file_name, (uint8_t*)fn_copy, 16))
     segfault(f);
 
   // remove file, using global lock on file operations to avoid races
   struct process* pcb = thread_current()->pcb;
   lock_acquire(pcb->global_filesys_lock);
-  int output = (int)filesys_remove(file_name);
+  int output = (int)filesys_remove(fn_copy);
   lock_release(pcb->global_filesys_lock);
 
   return output;
 }
 
-// args are: file name
-static uint32_t sc_open(struct intr_frame* f UNUSED, uint32_t* args) {
-  char file_name[16];
-  if (!get_str((uint8_t*)args[0], (uint8_t*)file_name, 16))
+SYSCALL_DEFINE(sc_open, SYS_OPEN, f, args, char* file_name) {
+  char fn_copy[16];
+  if (!get_str((uint8_t*)args->file_name, (uint8_t*)fn_copy, 16))
     segfault(f);
 
   // finds next open entry in fd table, potentially
@@ -162,7 +132,7 @@ static uint32_t sc_open(struct intr_frame* f UNUSED, uint32_t* args) {
   struct process* pcb = thread_current()->pcb;
 
   lock_acquire(pcb->global_filesys_lock);
-  struct file* output = filesys_open(file_name);
+  struct file* output = filesys_open(fn_copy);
   lock_release(pcb->global_filesys_lock);
 
   if (output == NULL)
@@ -174,12 +144,9 @@ static uint32_t sc_open(struct intr_frame* f UNUSED, uint32_t* args) {
   return thread_current()->pcb->next_fd;
 }
 
-// args are: fd
-static uint32_t sc_filesize(struct intr_frame* f UNUSED, uint32_t* args) {
-  int fd = args[0];
-
+SYSCALL_DEFINE(sc_filesize, SYS_FILESIZE, f, args, int fd) {
   // file descriptor corresponds to empty entry in fd table
-  if (fd < 0 || fd >= NOFILE || thread_current()->pcb->open_files[fd] == NULL) {
+  if (args->fd < 0 || args->fd >= NOFILE || thread_current()->pcb->open_files[args->fd] == NULL) {
     return -1;
   }
 
@@ -187,82 +154,71 @@ static uint32_t sc_filesize(struct intr_frame* f UNUSED, uint32_t* args) {
 
   lock_acquire(pcb->global_filesys_lock);
   // call the file function
-  off_t output = file_length(thread_current()->pcb->open_files[fd]);
+  off_t output = file_length(thread_current()->pcb->open_files[args->fd]);
   lock_release(pcb->global_filesys_lock);
 
   return (int)output;
 }
 
-// args: fd, buffer, size
-static uint32_t sc_read(struct intr_frame* f UNUSED, uint32_t* args) {
-  int fd = args[0];
-  uint8_t* dst = (uint8_t*)args[1];
-  unsigned size = args[2];
-
-  if (fd == 0) {
-    for (unsigned i = 0; i < size; i++)
-      if (!put_byte(dst++, input_getc()))
+SYSCALL_DEFINE(sc_read, SYS_READ, f, args, int fd, void* dst, unsigned size) {
+  if (args->fd == 0) {
+    for (unsigned i = 0; i < args->size; i++)
+      if (!put_byte(args->dst++, input_getc()))
         segfault(f);
-    return size;
+    return args->size;
   }
 
   // if fd doesn't correspond to opened file
-  if (fd < 0 || fd >= NOFILE || thread_current()->pcb->open_files[fd] == NULL) {
+  if (args->fd < 0 || args->fd >= NOFILE || thread_current()->pcb->open_files[args->fd] == NULL) {
     return -1;
   }
 
-  uint8_t* buf = malloc(size);
+  uint8_t* buf = malloc(args->size);
 
   struct process* pcb = thread_current()->pcb;
   lock_acquire(pcb->global_filesys_lock);
-  size = file_read(thread_current()->pcb->open_files[fd], buf, size);
+  int result = file_read(thread_current()->pcb->open_files[args->fd], buf, args->size);
   lock_release(pcb->global_filesys_lock);
 
-  if (!put_bytes(dst, buf, size)) {
+  if (!put_bytes(args->dst, buf, args->size)) {
     free(buf);
     segfault(f);
   }
   free(buf);
 
-  return size;
+  return result;
 }
 
-static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
-  int fd = args[0];
-  uint8_t* src = (uint8_t*)args[1];
-  unsigned size = args[2];
-
-  char* buf = malloc(size);
-  if (!get_bytes(src, (uint8_t*)buf, size))
+SYSCALL_DEFINE(sc_write, SYS_WRITE, f, args, int fd, void* src, unsigned size) {
+  char* buf = malloc(args->size);
+  if (!get_bytes(args->src, (uint8_t*)buf, args->size))
     segfault(f);
 
-  if (fd == 1) {
-    putbuf(buf, size);
-    return size;
+  if (args->fd == 1) {
+    putbuf(buf, args->size);
+    return args->size;
   }
 
   // if fd doesn't correspond to opened file
-  if (fd < 0 || fd >= NOFILE || thread_current()->pcb->open_files[fd] == NULL) {
+  if (args->fd < 0 || args->fd >= NOFILE || thread_current()->pcb->open_files[args->fd] == NULL) {
     return -1;
   }
 
   struct process* pcb = thread_current()->pcb;
   lock_acquire(pcb->global_filesys_lock);
-  size = file_write(thread_current()->pcb->open_files[fd], src, size);
+  int result = file_write(thread_current()->pcb->open_files[args->fd], args->src, args->size);
   lock_release(pcb->global_filesys_lock);
 
-  return size;
+  return result;
 }
 
-static uint32_t sc_seek(struct intr_frame* f, uint32_t* args) {
-  int fd = args[0];
-  int position = args[1];
+SYSCALL_DEFINE(sc_seek, SYS_SEEK, f, args, int fd, unsigned position) {
   struct process* pcb = thread_current()->pcb;
-  bool success = fd >= 3 && fd < NOFILE; // fail if fd is out of range
-  success = success && position >= 0;
+  bool success = args->fd >= 3 && args->fd < NOFILE; // fail if fd is out of range
+  success = success && args->position >= 0;
   struct file* file = NULL;
   if (success) {
-    file = pcb->open_files[fd];
+    file = pcb->open_files[args->fd];
     success = file != NULL; // fail if fd is not currently open
   }
   if (!success) {
@@ -271,17 +227,16 @@ static uint32_t sc_seek(struct intr_frame* f, uint32_t* args) {
     printf("%s: exit(%d)\n", pcb->process_name, -1);
     process_exit();
   }
-  file_seek(file, (unsigned)position);
+  file_seek(file, args->position);
   return 0;
 }
 
-static uint32_t sc_tell(struct intr_frame* f, uint32_t* args) {
-  int fd = args[0];
+SYSCALL_DEFINE(sc_tell, SYS_TELL, f, args, int fd) {
   struct process* pcb = thread_current()->pcb;
-  bool success = fd >= 3 && fd < NOFILE; // fail if fd is out of range
+  bool success = args->fd >= 3 && args->fd < NOFILE; // fail if fd is out of range
   struct file* file = NULL;
   if (success) {
-    file = pcb->open_files[fd];
+    file = pcb->open_files[args->fd];
     success = file != NULL; // fail if fd is not currently open
   }
   if (!success) {
@@ -293,14 +248,11 @@ static uint32_t sc_tell(struct intr_frame* f, uint32_t* args) {
   return file_tell(file);
 }
 
-// args are: fd
-static uint32_t sc_close(struct intr_frame* f UNUSED, uint32_t* args) {
+SYSCALL_DEFINE(sc_close, SYS_CLOSE, f, args, int fd) {
   bool success = true;
-  int fd;
-  if (args[0] == NULL || args[0] == 0 || args[0] == 1 || args[0] != (args[0] % NOFILE)) {
+  if (args->fd == NULL || args->fd == 0 || args->fd == 1 || args->fd != (args->fd % NOFILE)) {
     success = false;
   }
-  fd = args[0];
 
   // malloc unnecessary as not creating new inode
   //if (success) {
@@ -321,72 +273,85 @@ static uint32_t sc_close(struct intr_frame* f UNUSED, uint32_t* args) {
 
   lock_acquire(pcb->global_filesys_lock);
   // closes the file; this function also frees everything
-  file_close(thread_current()->pcb->open_files[fd]);
+  file_close(thread_current()->pcb->open_files[args->fd]);
   lock_release(pcb->global_filesys_lock);
 
   // re-references the entry in the fd table to NULL
-  thread_current()->pcb->open_files[fd] = NULL;
+  thread_current()->pcb->open_files[args->fd] = NULL;
 
-  return;
+  return 0;
 }
 
-// ================================
-// Floating point operation syscall
-// ================================
+// =================================
+// Floating point operation syscalls
+// =================================
 
-static uint32_t sc_compute_e(struct intr_frame* f UNUSED, uint32_t* args) {
-  int n = args[0];
-  if (n < 0) {
+SYSCALL_DEFINE(sc_compute_e, SYS_COMPUTE_E, f, args, int n) {
+  if (args->n < 0) {
     return -1;
   }
-  return sys_sum_to_e(n);
+  return sys_sum_to_e(args->n);
 }
 
 // =============================
 // General syscall handler stuff
 // =============================
 
-static struct syscall_desc* syscall_lookup(uint32_t syscall_number) {
-  for (unsigned i = 0; i < sizeof(syscall_table) / sizeof(*syscall_table); i++) {
-    if (syscall_table[i].syscall_number == syscall_number) {
-      return &syscall_table[i];
+struct syscall* syscall_table[] = {
+    // Process control syscalls
+    &sc_practice,
+    &sc_halt,
+    &sc_exit,
+    &sc_exec,
+    &sc_wait,
+
+    // File operation syscalls
+    &sc_create,
+    &sc_remove,
+    &sc_open,
+    &sc_filesize,
+    &sc_read,
+    &sc_write,
+    &sc_seek,
+    &sc_tell,
+    &sc_close,
+
+    // Floating point operation syscalls
+    &sc_compute_e,
+};
+
+static struct syscall* syscall_lookup(uint32_t syscall_number) {
+  for (unsigned i = 0; i < sizeof(syscall_table) / sizeof(syscall_table[0]); i++) {
+    if (syscall_table[i]->syscall_number == syscall_number) {
+      return syscall_table[i];
     }
   }
   return NULL;
 }
 
 static void syscall_handler(struct intr_frame* f) {
-  /*
-   * The following print statement, if uncommented, will print out the syscall
-   * number whenever a process enters a system call. You might find it useful
-   * when debugging. It will cause tests to fail, however, so you should not
-   * include it in your final submission.
-   */
-
-  /* printf("System call number: %d\n", args[0]); */
-
   uint32_t syscall_number;
   if (!get_bytes(f->esp, (uint8_t*)&syscall_number, 4)) {
     segfault(f);
   }
 
-  struct syscall_desc* syscall = syscall_lookup(syscall_number);
+  struct syscall* syscall = syscall_lookup(syscall_number);
   if (syscall == NULL) {
     f->eax = -1;
     return;
   }
 
   uint32_t args[SYSCALL_MAX_NARGS];
-  if (!get_bytes(f->esp + 4, (uint8_t*)args, syscall->nargs * 4)) {
+  if (!get_bytes(f->esp + 4, (uint8_t*)args, syscall->args_size)) {
     segfault(f);
   }
 
-  f->eax = syscall->fun(f, args);
+  syscall->handler(f, args);
 }
 
 static void segfault(struct intr_frame* f) {
   uint32_t args[] = {-1};
-  sc_exit(f, args);
+  sc_exit.handler(f, args);
 }
 
 // =======
