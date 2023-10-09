@@ -1,6 +1,8 @@
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <syscall-nr.h>
+#include "devices/input.h"
 #include "devices/shutdown.h"
 #include "threads/arc.h"
 #include "threads/interrupt.h"
@@ -22,6 +24,7 @@ static void segfault(struct intr_frame*);
 static bool get_str(const uint8_t* uaddr, uint8_t* buf, int maxsize);
 static bool get_bytes(const uint8_t* uaddr, uint8_t* buf, int size);
 static bool get_byte(const uint8_t* uaddr, uint8_t* buf);
+static bool put_bytes(uint8_t* udst, uint8_t* buf, int size);
 static bool put_byte(uint8_t* udst, uint8_t byte);
 
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
@@ -81,7 +84,6 @@ struct syscall_desc syscall_table[] = {
 // ========================
 static uint32_t sc_practice(struct intr_frame* f UNUSED, uint32_t* args) {
   int arg = args[0];
-
   return arg + 1;
 }
 
@@ -93,7 +95,6 @@ static uint32_t sc_halt(struct intr_frame* f UNUSED, uint32_t* args UNUSED) {
 static uint32_t sc_exit(struct intr_frame* f, uint32_t* args) {
   int status = args[0];
 
-  f->eax = status; // need to put it manually, this function will never return
   thread_current()->pcb->shared->exit_status = status;
   printf("%s: exit(%d)\n", thread_current()->pcb->process_name, status);
   process_exit();
@@ -119,59 +120,26 @@ static uint32_t sc_wait(struct intr_frame* f UNUSED, uint32_t* args) {
 // =======================
 
 static uint32_t sc_create(struct intr_frame* f, uint32_t* args) {
-  bool success = true;
-  unsigned char* file_name;
-  unsigned size;
-  if ((void*)args[0] == NULL) {
-    success = false;
-  }
-  if (success) {
-    file_name = (char*)malloc(16); // max filesize
-    success = get_str((uint8_t*)args[0], file_name, 16);
-    size = args[1];
-  }
-
-  if (!success || file_name == NULL) { // null or bad pointer
-    f->eax = -1;
-    thread_current()->pcb->shared->exit_status = -1;
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
-    process_exit();
-
-    NOT_REACHED();
-  }
+  char file_name[16];
+  if (!get_str((uint8_t*)args[0], (uint8_t*)file_name, 16))
+    segfault(f);
+  unsigned size = args[1];
 
   struct process* pcb = thread_current()->pcb;
-
   lock_acquire(pcb->global_filesys_lock);
-  int output = (int)filesys_create((char*)file_name, size);
+  uint32_t output = filesys_create(file_name, size);
   lock_release(pcb->global_filesys_lock);
 
   return output;
 }
 
 static uint32_t sc_remove(struct intr_frame* f UNUSED, uint32_t* args) {
-  bool success = true;
-  char* file_name;
-  if (args[0] == NULL) {
-    success = false;
-  }
-  if (success) {
-    file_name = (char*)malloc(16); // max filesize
-    success = get_str((uint8_t*)args[0], file_name, 16);
-  }
-
-  if (file_name == NULL || !success) { // null or bad pointer
-    f->eax = -1;
-    thread_current()->pcb->shared->exit_status = -1;
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
-    process_exit();
-
-    NOT_REACHED();
-  }
+  char file_name[16];
+  if (!get_str((uint8_t*)args[0], (uint8_t*)file_name, 16))
+    segfault(f);
 
   // remove file, using global lock on file operations to avoid races
   struct process* pcb = thread_current()->pcb;
-
   lock_acquire(pcb->global_filesys_lock);
   int output = (int)filesys_remove(file_name);
   lock_release(pcb->global_filesys_lock);
@@ -181,32 +149,14 @@ static uint32_t sc_remove(struct intr_frame* f UNUSED, uint32_t* args) {
 
 // args are: file name
 static uint32_t sc_open(struct intr_frame* f UNUSED, uint32_t* args) {
-  bool success = true;
-  char* file_name;
-  if (args[0] == NULL) {
-    success = false;
-  }
-  if (success) {
-    file_name = (char*)malloc(16); // max filesize
-    success = get_str((uint8_t*)args[0], file_name, 16);
-  }
-
-  if (file_name == NULL || !success) { // null or bad pointer
-    f->eax = -1;
-    thread_current()->pcb->shared->exit_status = -1;
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
-    process_exit();
-
-    NOT_REACHED();
-  }
+  char file_name[16];
+  if (!get_str((uint8_t*)args[0], (uint8_t*)file_name, 16))
+    segfault(f);
 
   // finds next open entry in fd table, potentially
   while (thread_current()->pcb->open_files[thread_current()->pcb->next_fd] != NULL) {
-    thread_current()->pcb->next_fd =
-        2 +
-        ((thread_current()->pcb->next_fd - 1) %
-         (NOFILE -
-          2)); // a bit odd syntax, but basically this increments by 1 unless equal to NOFILE - 1, in which case sets to be 2.
+    // a bit odd syntax, but basically this increments by 1 unless equal to NOFILE - 1, in which case sets to be 2.
+    thread_current()->pcb->next_fd = 2 + ((thread_current()->pcb->next_fd - 1) % (NOFILE - 2));
   }
 
   struct process* pcb = thread_current()->pcb;
@@ -215,9 +165,8 @@ static uint32_t sc_open(struct intr_frame* f UNUSED, uint32_t* args) {
   struct file* output = filesys_open(file_name);
   lock_release(pcb->global_filesys_lock);
 
-  if (output == NULL) {
+  if (output == NULL)
     return -1;
-  }
 
   // puts the created file* into the fd table
   thread_current()->pcb->open_files[thread_current()->pcb->next_fd] = output;
@@ -227,25 +176,7 @@ static uint32_t sc_open(struct intr_frame* f UNUSED, uint32_t* args) {
 
 // args are: fd
 static uint32_t sc_filesize(struct intr_frame* f UNUSED, uint32_t* args) {
-  bool success = true;
-  if (args[0] == NULL) {
-    success = false;
-  }
   int fd = args[0];
-  // malloc unnecessary as not creating new inode
-  //if (success) {
-  //  file_name = (char*) malloc(16); // max filesize
-  //  success = get_str((uint8_t*)args[0], file_name, 16);
-  //}
-
-  if (!success) { // null or bad pointer
-    f->eax = -1;
-    thread_current()->pcb->shared->exit_status = -1;
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
-    process_exit();
-
-    NOT_REACHED();
-  }
 
   // file descriptor corresponds to empty entry in fd table
   if (fd < 0 || fd >= NOFILE || thread_current()->pcb->open_files[fd] == NULL) {
@@ -265,29 +196,13 @@ static uint32_t sc_filesize(struct intr_frame* f UNUSED, uint32_t* args) {
 // args: fd, buffer, size
 static uint32_t sc_read(struct intr_frame* f UNUSED, uint32_t* args) {
   int fd = args[0];
-  void* buffer = (void*)args[1];
+  uint8_t* dst = (uint8_t*)args[1];
   unsigned size = args[2];
 
-  bool success = true;
-
-  if (buffer >= (uint8_t*)PHYS_BASE) {
-    success = false;
-  }
-
-  if (!success) { // null or bad pointer
-    f->eax = -1;
-    thread_current()->pcb->shared->exit_status = -1;
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
-    process_exit();
-
-    NOT_REACHED();
-  }
-
   if (fd == 0) {
-    for (int i = 0; i < size; i++) {
-      int8_t input_char = input_getc();
-      ((char*)buffer)[i] = input_char;
-    }
+    for (unsigned i = 0; i < size; i++)
+      if (!put_byte(dst++, input_getc()))
+        segfault(f);
     return size;
   }
 
@@ -296,33 +211,34 @@ static uint32_t sc_read(struct intr_frame* f UNUSED, uint32_t* args) {
     return -1;
   }
 
-  return (uint32_t)file_read(thread_current()->pcb->open_files[fd], buffer, size);
+  uint8_t* buf = malloc(size);
 
-  //  return size;
+  struct process* pcb = thread_current()->pcb;
+  lock_acquire(pcb->global_filesys_lock);
+  size = file_read(thread_current()->pcb->open_files[fd], buf, size);
+  lock_release(pcb->global_filesys_lock);
+
+  if (!put_bytes(dst, buf, size)) {
+    free(buf);
+    segfault(f);
+  }
+  free(buf);
+
+  return size;
 }
 
 static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
   int fd = args[0];
-  void* buffer = (void*)args[1];
+  uint8_t* src = (uint8_t*)args[1];
   unsigned size = args[2];
 
-  bool success = true;
-
-  if (buffer >= (uint8_t*)PHYS_BASE) {
-    success = false;
-  }
-
-  if (!success) { // null or bad pointer
-    f->eax = -1;
-    thread_current()->pcb->shared->exit_status = -1;
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, -1);
-    process_exit();
-
-    NOT_REACHED();
-  }
+  char* buf = malloc(size);
+  if (!get_bytes(src, (uint8_t*)buf, size))
+    segfault(f);
 
   if (fd == 1) {
-    putbuf(buffer, size);
+    putbuf(buf, size);
+    return size;
   }
 
   // if fd doesn't correspond to opened file
@@ -330,7 +246,12 @@ static uint32_t sc_write(struct intr_frame* f UNUSED, uint32_t* args) {
     return -1;
   }
 
-  return file_write(thread_current()->pcb->open_files[fd], buffer, size);
+  struct process* pcb = thread_current()->pcb;
+  lock_acquire(pcb->global_filesys_lock);
+  size = file_write(thread_current()->pcb->open_files[fd], src, size);
+  lock_release(pcb->global_filesys_lock);
+
+  return size;
 }
 
 static uint32_t sc_seek(struct intr_frame* f, uint32_t* args) {
@@ -540,6 +461,18 @@ static bool get_byte(const uint8_t* uaddr, uint8_t* buf) {
   }
 
   *buf = result;
+  return true;
+}
+
+/* Writes multiple bytes to user virtual address UDST.
+   Returns true if successful,
+   false if a segfault occurred. */
+static bool put_bytes(uint8_t* udst, uint8_t* buf, int size) {
+  for (int i = 0; i < size; i++) {
+    if (!put_byte(udst++, *buf++)) {
+      return false;
+    }
+  }
   return true;
 }
 
