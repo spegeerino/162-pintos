@@ -230,9 +230,8 @@ void process_exit(void) {
   }
   // reallow writes to executable
   lock_acquire(&global_filesys_lock);
-  struct file* executable_file = filesys_open(pcb_to_free->process_name);
-  file_allow_write(executable_file);
-  file_close(executable_file);
+  file_allow_write(pcb_to_free->self_exec_file);
+  file_close(pcb_to_free->self_exec_file);
   lock_release(&global_filesys_lock);
 
   free(pcb_to_free);
@@ -506,12 +505,12 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 
   /* Deny writing to the file while executable is loaded (allow at exit) */
   file_deny_write(file);
+  t->pcb->self_exec_file = file;
 
   success = true;
 
 done:
   /* We arrive here whether the load is successful or not. */
-  file_close(file);
   lock_release(&global_filesys_lock);
   return success;
 }
