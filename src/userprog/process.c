@@ -232,8 +232,14 @@ void process_exit(void) {
   }
   // reallow writes to executable
   lock_acquire(&global_filesys_lock);
-  file_allow_write(pcb_to_free->self_exec_file);
+  // closing file reallows writes to exec
   file_close(pcb_to_free->self_exec_file);
+  for (int fd = 2; fd < NOFILE; fd++) {
+    struct file* file_to_close = pcb_to_free->open_files[fd];
+    if (file_to_close != NULL) {
+      file_close(file_to_close);
+    }
+  }
   lock_release(&global_filesys_lock);
 
   free(pcb_to_free);
