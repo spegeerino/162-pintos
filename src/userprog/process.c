@@ -215,7 +215,7 @@ void process_exit(void) {
     pagedir_destroy(pd);
   }
 
-  printf("%d %s: exit(%d)\n", cur->tid, cur->pcb->process_name, cur->pcb->shared->exit_status);
+  printf("%s: exit(%d)\n", cur->pcb->process_name, cur->pcb->shared->exit_status);
 
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
