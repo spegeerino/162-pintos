@@ -166,7 +166,7 @@ int process_wait(pid_t child_pid) {
   struct process* pcb = thread_current()->pcb;
 
   // Loop through the PCB's child_shared to find the child's shared_proc_data
-  // All elements in the list are guaranteed to be null because the list holds
+  // All elements in the list are guaranteed to not be null because the list holds
   // a reference to the arc. If there is no match, it is invalid or has been
   // waited on already, so we return -1.
   struct shared_proc_data* child_shared = list_find(&pcb->children_shared, struct shared_proc_data,
