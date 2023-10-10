@@ -91,7 +91,7 @@ int process_execute(const char* cmd_line) {
   return shared->pid;
 
 cleanup:;
-  shared_proc_data_destroy(&shared->arc);
+  arc_dec_ref(&shared->arc);
   return TID_ERROR;
 }
 
