@@ -162,6 +162,9 @@ SYSCALL_DEFINE(sc_filesize, SYS_FILESIZE, args, int fd) {
 }
 
 SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
+  if (args->size == 0)
+    return 0;
+
   if (args->fd == 0) {
     for (unsigned i = 0; i < args->size; i++)
       if (!put_byte(args->dst++, input_getc()))
@@ -193,6 +196,9 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
 }
 
 SYSCALL_DEFINE(sc_write, SYS_WRITE, args, int fd, void* src, unsigned size) {
+  if (args->size == 0)
+    return 0;
+
   char* buf = malloc(args->size);
   if (buf == NULL)
     return -1;
