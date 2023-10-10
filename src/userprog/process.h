@@ -11,6 +11,8 @@
 #define MAX_THREADS 127
 #define NOFILE 256
 
+extern struct lock global_filesys_lock;
+
 /* PIDs and TIDs are the same type. PID should be
    the TID of the main thread of the process */
 typedef tid_t pid_t;
@@ -35,9 +37,8 @@ struct process {
   struct list children_shared; /* List of children's process data (exec/wait) */
 
   struct file* open_files[NOFILE]; /* Array of process's open files */
-  int next_fd; /* Next available index in open_files */
-  struct lock* global_filesys_lock; /* Pointer to the global filesys semaphore for file access synchronization */
-  struct file* self_exec_file; /* Pointer to file executable to deny_write to executable */
+  int next_fd;                     /* Next available index in open_files */
+  struct file* self_exec_file;     /* Pointer to file executable to deny_write to executable */
 };
 
 struct shared_proc_data {

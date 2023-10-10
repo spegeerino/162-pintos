@@ -1,3 +1,4 @@
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,14 +23,17 @@
 #define SYSCALL_MAX_NARGS 5
 
 static void syscall_handler(struct intr_frame*);
-static void segfault(void);
-static bool get_str(const uint8_t* uaddr, uint8_t* buf, int maxsize);
-static bool get_bytes(const uint8_t* uaddr, uint8_t* buf, int size);
-static bool get_byte(const uint8_t* uaddr, uint8_t* buf);
-static bool put_bytes(uint8_t* udst, uint8_t* buf, int size);
-static bool put_byte(uint8_t* udst, uint8_t byte);
-
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
+
+/* Functions for reading and writing user memory */
+static void segfault(void);
+static bool get_byte(const char* uaddr, char* buf);
+static bool put_byte(char* udst, char byte);
+
+/* Higher-level memory functions */
+static bool strlcpy_from_user(char* dst, const char* usrc, int maxsize);
+static bool memcpy_from_user(void* dst, const void* usrc, int size);
+static bool memcpy_to_user(void* udst, const void* src, int size);
 
 // =============================
 // Helpers for defining syscalls
@@ -70,7 +74,6 @@ SYSCALL_DEFINE(sc_halt, SYS_HALT, args UNUSED) {
 SYSCALL_DEFINE(sc_exit, SYS_EXIT, args, uint32_t status) {
   thread_current()->pcb->shared->exit_status = args->status;
   process_exit();
-
   NOT_REACHED();
 }
 
@@ -78,7 +81,7 @@ SYSCALL_DEFINE(sc_exec, SYS_EXEC, args, char* cmd_line) {
   char* cl_copy = palloc_get_page(0);
   if (cl_copy == NULL)
     return -1;
-  if (!get_str((uint8_t*)args->cmd_line, (uint8_t*)cl_copy, PGSIZE))
+  if (!strlcpy_from_user(cl_copy, args->cmd_line, PGSIZE))
     segfault();
 
   int result = process_execute(cl_copy);
@@ -94,77 +97,75 @@ SYSCALL_DEFINE(sc_wait, SYS_WAIT, args, pid_t pid) { return process_wait(args->p
 
 SYSCALL_DEFINE(sc_create, SYS_CREATE, args, char* file_name, unsigned initial_size) {
   char fn_copy[16];
-  if (!get_str((uint8_t*)args->file_name, (uint8_t*)fn_copy, 16))
+  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
     segfault();
 
-  struct process* pcb = thread_current()->pcb;
-  lock_acquire(pcb->global_filesys_lock);
+  lock_acquire(&global_filesys_lock);
   uint32_t output = filesys_create(fn_copy, args->initial_size);
-  lock_release(pcb->global_filesys_lock);
-
+  lock_release(&global_filesys_lock);
   return output;
 }
 
 SYSCALL_DEFINE(sc_remove, SYS_REMOVE, args, char* file_name) {
   char fn_copy[16];
-  if (!get_str((uint8_t*)args->file_name, (uint8_t*)fn_copy, 16))
+  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
     segfault();
 
-  // remove file, using global lock on file operations to avoid races
-  struct process* pcb = thread_current()->pcb;
-  lock_acquire(pcb->global_filesys_lock);
-  int output = (int)filesys_remove(fn_copy);
-  lock_release(pcb->global_filesys_lock);
-
+  lock_acquire(&global_filesys_lock);
+  int output = filesys_remove(fn_copy);
+  lock_release(&global_filesys_lock);
   return output;
 }
 
 SYSCALL_DEFINE(sc_open, SYS_OPEN, args, char* file_name) {
+  struct process* pcb = thread_current()->pcb;
   char fn_copy[16];
-  if (!get_str((uint8_t*)args->file_name, (uint8_t*)fn_copy, 16))
+  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
     segfault();
 
   // finds next open entry in fd table, potentially
-  while (thread_current()->pcb->open_files[thread_current()->pcb->next_fd] != NULL) {
+  while (pcb->open_files[pcb->next_fd] != NULL) {
     // a bit odd syntax, but basically this increments by 1 unless equal to NOFILE - 1, in which case sets to be 2.
-    thread_current()->pcb->next_fd = 2 + ((thread_current()->pcb->next_fd - 1) % (NOFILE - 2));
+    pcb->next_fd = 2 + ((pcb->next_fd - 1) % (NOFILE - 2));
   }
 
-  struct process* pcb = thread_current()->pcb;
-
-  lock_acquire(pcb->global_filesys_lock);
+  /* Opn the file, making sure to acquire the lock */
+  lock_acquire(&global_filesys_lock);
   struct file* output = filesys_open(fn_copy);
-  lock_release(pcb->global_filesys_lock);
+  lock_release(&global_filesys_lock);
 
   if (output == NULL)
     return -1;
 
   // puts the created file* into the fd table
-  thread_current()->pcb->open_files[thread_current()->pcb->next_fd] = output;
+  pcb->open_files[pcb->next_fd] = output;
+  return pcb->next_fd;
+}
 
-  return thread_current()->pcb->next_fd;
+/* Looks up a FD in the current thread's PCB. */
+static struct file* fd_lookup(int fd) {
+  struct process* pcb = thread_current()->pcb;
+  if (fd < 0 || fd >= NOFILE)
+    return NULL;
+  return pcb->open_files[fd];
 }
 
 SYSCALL_DEFINE(sc_filesize, SYS_FILESIZE, args, int fd) {
-  // file descriptor corresponds to empty entry in fd table
-  if (args->fd < 0 || args->fd >= NOFILE || thread_current()->pcb->open_files[args->fd] == NULL) {
+  /* Look up FD from OFD */
+  struct file* file = fd_lookup(args->fd);
+  if (file == NULL)
     return -1;
-  }
 
-  struct process* pcb = thread_current()->pcb;
+  /* Return length of the file, making sure to acquire the lock */
+  lock_acquire(&global_filesys_lock);
+  off_t output = file_length(file);
+  lock_release(&global_filesys_lock);
 
-  lock_acquire(pcb->global_filesys_lock);
-  // call the file function
-  off_t output = file_length(thread_current()->pcb->open_files[args->fd]);
-  lock_release(pcb->global_filesys_lock);
-
-  return (int)output;
+  return output;
 }
 
 SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
-  if (args->size == 0)
-    return 0;
-
+  /* Handle reading from stdin (fd == 0). */
   if (args->fd == 0) {
     for (unsigned i = 0; i < args->size; i++)
       if (!put_byte(args->dst++, input_getc()))
@@ -172,26 +173,32 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
     return args->size;
   }
 
-  // if fd doesn't correspond to opened file
-  if (args->fd < 0 || args->fd >= NOFILE || thread_current()->pcb->open_files[args->fd] == NULL) {
+  /* Look up FD from OFD */
+  struct file* file = fd_lookup(args->fd);
+  if (file == NULL)
     return -1;
-  }
 
+  /* Reading 0 bytes should succeed */
+  if (args->size == 0)
+    return 0;
+
+  /* Allocate temporary buffer in kernel memory */
   uint8_t* buf = malloc(args->size);
   if (buf == NULL)
     return -1;
 
-  struct process* pcb = thread_current()->pcb;
-  lock_acquire(pcb->global_filesys_lock);
-  int result = file_read(thread_current()->pcb->open_files[args->fd], buf, args->size);
-  lock_release(pcb->global_filesys_lock);
+  /* Read from file to temporary buffer, making sure to acquire the lock */
+  lock_acquire(&global_filesys_lock);
+  int result = file_read(file, buf, args->size);
+  lock_release(&global_filesys_lock);
 
-  if (!put_bytes(args->dst, buf, args->size)) {
+  /* Copy to user memory using the helper (this handles segfaults) */
+  if (!memcpy_to_user(args->dst, buf, args->size)) {
     free(buf);
     segfault();
   }
-  free(buf);
 
+  free(buf);
   return result;
 }
 
@@ -199,84 +206,69 @@ SYSCALL_DEFINE(sc_write, SYS_WRITE, args, int fd, void* src, unsigned size) {
   if (args->size == 0)
     return 0;
 
+  /* Allocate temporary buffer in kernel memory */
   char* buf = malloc(args->size);
   if (buf == NULL)
     return -1;
-  if (!get_bytes(args->src, (uint8_t*)buf, args->size)) {
+
+  /* Copy data to write into temporary buffer */
+  if (!memcpy_from_user(buf, args->src, args->size)) {
     free(buf);
     segfault();
   }
 
+  /* Handle writing to stdout (fd == 1) */
   if (args->fd == 1) {
     putbuf(buf, args->size);
     return args->size;
   }
 
-  // if fd doesn't correspond to opened file
-  if (args->fd < 0 || args->fd >= NOFILE || thread_current()->pcb->open_files[args->fd] == NULL) {
+  /* Look up FD from OFD */
+  struct file* file = fd_lookup(args->fd);
+  if (file == NULL)
     return -1;
-  }
 
-  struct process* pcb = thread_current()->pcb;
-  lock_acquire(pcb->global_filesys_lock);
-  int result = file_write(thread_current()->pcb->open_files[args->fd], args->src, args->size);
-  lock_release(pcb->global_filesys_lock);
+  /* Read from temporary buffer to file, making sure to acquire the lock */
+  lock_acquire(&global_filesys_lock);
+  int result = file_write(file, args->src, args->size);
+  lock_release(&global_filesys_lock);
 
   return result;
 }
 
 SYSCALL_DEFINE(sc_seek, SYS_SEEK, args, int fd, unsigned position) {
-  struct process* pcb = thread_current()->pcb;
-  bool success = args->fd >= 3 && args->fd < NOFILE; // fail if fd is out of range
-  success = success && args->position >= 0;
-  struct file* file = NULL;
-  if (success) {
-    file = pcb->open_files[args->fd];
-    success = file != NULL; // fail if fd is not currently open
-  }
-  if (!success) {
-    segfault();
-  }
+  /* Look up FD from OFD */
+  struct file* file = fd_lookup(args->fd);
+  if (file == NULL)
+    return -1;
+
+  /* Seek, making sure to acquire the lock */
+  lock_acquire(&global_filesys_lock);
   file_seek(file, args->position);
+  lock_release(&global_filesys_lock);
+
   return 0;
 }
 
 SYSCALL_DEFINE(sc_tell, SYS_TELL, args, int fd) {
-  struct process* pcb = thread_current()->pcb;
-  bool success = args->fd >= 3 && args->fd < NOFILE; // fail if fd is out of range
-  struct file* file = NULL;
-  if (success) {
-    file = pcb->open_files[args->fd];
-    success = file != NULL; // fail if fd is not currently open
-  }
-  if (!success) {
-    segfault();
-  }
+  /* Look up FD from OFD */
+  struct file* file = fd_lookup(args->fd);
+  if (file == NULL)
+    return -1;
+
+  /* Don't need to acquire the lock here */
   return file_tell(file);
 }
 
 SYSCALL_DEFINE(sc_close, SYS_CLOSE, args, int fd) {
-  bool success = true;
-  if (args->fd == NULL || args->fd == 0 || args->fd == 1 || args->fd != (args->fd % NOFILE)) {
-    success = false;
-  }
+  /* Look up FD from OFD */
+  struct file* file = fd_lookup(args->fd);
+  if (file == NULL)
+    return -1;
 
-  // malloc unnecessary as not creating new inode
-  //if (success) {
-  //  file_name = (char*) malloc(16); // max filesize
-  //  success = get_str((uint8_t*)args[0], file_name, 16);
-  //}
-
-  if (!success) { // null or bad pointer
-    segfault();
-  }
-
-  struct process* pcb = thread_current()->pcb;
-
-  lock_acquire(pcb->global_filesys_lock);
-  // closes the file; this function also frees everything
-  file_close(thread_current()->pcb->open_files[args->fd]);
-  lock_release(pcb->global_filesys_lock);
+  lock_acquire(&global_filesys_lock);
+  file_close(file);
+  lock_release(&global_filesys_lock);
 
   // re-references the entry in the fd table to NULL
   thread_current()->pcb->open_files[args->fd] = NULL;
@@ -289,9 +281,8 @@ SYSCALL_DEFINE(sc_close, SYS_CLOSE, args, int fd) {
 // =================================
 
 SYSCALL_DEFINE(sc_compute_e, SYS_COMPUTE_E, args, int n) {
-  if (args->n < 0) {
+  if (args->n < 0)
     return -1;
-  }
   return sys_sum_to_e(args->n);
 }
 
@@ -323,31 +314,31 @@ struct syscall* syscall_table[] = {
 };
 
 static struct syscall* syscall_lookup(uint32_t syscall_number) {
-  for (unsigned i = 0; i < sizeof(syscall_table) / sizeof(syscall_table[0]); i++) {
-    if (syscall_table[i]->syscall_number == syscall_number) {
+  for (unsigned i = 0; i < sizeof(syscall_table) / sizeof(syscall_table[0]); i++)
+    if (syscall_table[i]->syscall_number == syscall_number)
       return syscall_table[i];
-    }
-  }
   return NULL;
 }
 
 static void syscall_handler(struct intr_frame* f) {
+  /* Get first argument (syscall number) */
   uint32_t syscall_number;
-  if (!get_bytes(f->esp, (uint8_t*)&syscall_number, 4)) {
+  if (!memcpy_from_user(&syscall_number, f->esp, 4))
     segfault();
-  }
 
+  /* Look up syscall number, returning -1 if invalid */
   struct syscall* syscall = syscall_lookup(syscall_number);
   if (syscall == NULL) {
     f->eax = -1;
     return;
   }
 
+  /* Get the correct number of arguments from user memory */
   uint32_t args[SYSCALL_MAX_NARGS];
-  if (!get_bytes(f->esp + 4, (uint8_t*)args, syscall->args_size)) {
+  if (!memcpy_from_user(args, f->esp + 4, syscall->args_size))
     segfault();
-  }
 
+  /* Call handler and place result into eax */
   f->eax = syscall->handler(args);
 }
 
@@ -360,39 +351,43 @@ static void segfault() {
 // Helpers
 // =======
 
-/* Reads string starting at user virtual address UADDR into buf.
-   Returns true if successful,
-   false if a segfault occurred. */
-static bool get_str(const uint8_t* uaddr, uint8_t* buf, int maxsize) {
-  uint8_t tmp = 1;
-  for (int i = 0; tmp && i < maxsize - 1; i++) {
-    if (!get_byte(uaddr++, &tmp))
+/* Reads string starting at user virtual address USRC into DST.
+   Returns true if successful, false if a segfault occurred. */
+static bool strlcpy_from_user(char* dst, const char* usrc, int maxsize) {
+  for (int i = 0; i < maxsize - 1; i++) {
+    if (!get_byte(usrc++, dst))
       return false;
-    *(buf++) = tmp;
+    if (*dst++ == '\0')
+      return true;
   }
-  *buf = 0;
+
+  *dst = '\0';
   return true;
 }
 
-/* Reads multiple bytes at user virtual address UADDR into buf.
-   Returns true if successful,
-   false if a segfault occurred. */
-static bool get_bytes(const uint8_t* uaddr, uint8_t* buf, int size) {
-  for (int i = 0; i < size; i++) {
-    if (!get_byte(uaddr++, buf++)) {
+/* Reads multiple bytes at user virtual address USRC into buf.
+   Returns true if successful, false if a segfault occurred. */
+static bool memcpy_from_user(void* dst, const void* usrc, int size) {
+  for (int i = 0; i < size; i++)
+    if (!get_byte(usrc++, dst++))
       return false;
-    }
-  }
+  return true;
+}
+
+/* Writes multiple bytes to user virtual address UDST.
+   Returns true if successful, false if a segfault occurred. */
+static bool memcpy_to_user(void* udst, const void* src, int size) {
+  for (int i = 0; i < size; i++)
+    if (!put_byte(udst++, *(uint8_t*)src++))
+      return false;
   return true;
 }
 
 /* Reads a byte at user virtual address UADDR into buf.
-   Returns true if successful,
-   false if a segfault occurred. */
-static bool get_byte(const uint8_t* uaddr, uint8_t* buf) {
-  if (uaddr >= (uint8_t*)PHYS_BASE) {
+   Returns true if successful, false if a segfault occurred. */
+static bool get_byte(const char* uaddr, char* buf) {
+  if (uaddr >= (char*)PHYS_BASE)
     return false;
-  }
 
   int result;
 
@@ -423,33 +418,18 @@ static bool get_byte(const uint8_t* uaddr, uint8_t* buf) {
       // "m" means to pass it as a memory address.
       : "m"(*uaddr));
 
-  if (result == -1) {
+  if (result == -1)
     return false;
-  }
 
   *buf = result;
   return true;
 }
 
-/* Writes multiple bytes to user virtual address UDST.
-   Returns true if successful,
-   false if a segfault occurred. */
-static bool put_bytes(uint8_t* udst, uint8_t* buf, int size) {
-  for (int i = 0; i < size; i++) {
-    if (!put_byte(udst++, *buf++)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /* Writes BYTE to user address UDST.
-   Returns true if successful,
-   false if a segfault occurred. */
-static bool put_byte(uint8_t* udst, uint8_t byte) {
-  if (udst >= (uint8_t*)PHYS_BASE) {
+   Returns true if successful, false if a segfault occurred. */
+static bool put_byte(char* udst, char byte) {
+  if (udst >= (char*)PHYS_BASE)
     return false;
-  }
 
   int error_code;
 

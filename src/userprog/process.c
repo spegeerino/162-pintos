@@ -26,7 +26,8 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct lock global_filesys_lock;
+struct lock global_filesys_lock;
+
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
@@ -308,7 +309,6 @@ static bool setup_pcb(struct shared_proc_data* shared) {
   /* Set up rest of PCB */
   list_init(&t->pcb->children_shared);
   t->pcb->next_fd = 3;
-  t->pcb->global_filesys_lock = &global_filesys_lock;
 
   return true;
 }
