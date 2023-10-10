@@ -75,17 +75,22 @@ int process_execute(const char* cmd_line) {
   strlcpy(shared->cmd_line, cmd_line, PGSIZE);
 
   /* Create a new thread to execute CMD_LINE. */
-  shared->pid = thread_create(cmd_line, PRI_DEFAULT, start_process, shared);
-  if (shared->pid == TID_ERROR) {
-    shared_proc_data_destroy(&shared->arc);
-    return TID_ERROR;
-  }
+  tid_t tid = thread_create(cmd_line, PRI_DEFAULT, start_process, shared);
+  if (tid == TID_ERROR)
+    goto cleanup;
+
+  /* Wait for the executable to load or fail to load. */
+  sema_down(&shared->exec_sema);
+  if (shared->pid == TID_ERROR)
+    goto cleanup;
 
   struct process* pcb = thread_current()->pcb;
   list_push_back(&pcb->children_shared, &shared->elem);
-
-  sema_down(&shared->exec_sema);
   return shared->pid;
+
+cleanup:;
+  shared_proc_data_destroy(&shared->arc);
+  return TID_ERROR;
 }
 
 /* A thread function that loads a user process and starts it
@@ -124,6 +129,7 @@ static void start_process(void* _data) {
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
+  shared->pid = t->tid;
   sema_up(&shared->exec_sema);
   asm volatile("movl %0, %%esp; jmp intr_exit" : : "g"(&if_) : "memory");
   NOT_REACHED();
