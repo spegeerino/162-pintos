@@ -76,6 +76,8 @@ SYSCALL_DEFINE(sc_exit, SYS_EXIT, args, uint32_t status) {
 
 SYSCALL_DEFINE(sc_exec, SYS_EXEC, args, char* cmd_line) {
   char* cl_copy = palloc_get_page(0);
+  if (cl_copy == NULL)
+    return -1;
   if (!get_str((uint8_t*)args->cmd_line, (uint8_t*)cl_copy, PGSIZE))
     segfault();
 
@@ -171,6 +173,8 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
   }
 
   uint8_t* buf = malloc(args->size);
+  if (buf == NULL)
+    return -1;
 
   struct process* pcb = thread_current()->pcb;
   lock_acquire(pcb->global_filesys_lock);
@@ -188,6 +192,8 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
 
 SYSCALL_DEFINE(sc_write, SYS_WRITE, args, int fd, void* src, unsigned size) {
   char* buf = malloc(args->size);
+  if (buf == NULL)
+    return -1;
   if (!get_bytes(args->src, (uint8_t*)buf, args->size))
     segfault();
 

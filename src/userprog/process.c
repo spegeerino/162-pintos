@@ -70,6 +70,8 @@ int process_execute(const char* cmd_line) {
   /* Make a copy of CMD_LINE.
      Otherwise there's a race between the caller and load(). */
   struct shared_proc_data* shared = malloc(sizeof *shared);
+  if (shared == NULL)
+    return TID_ERROR;
   if (!shared_proc_data_init(shared))
     return TID_ERROR;
   strlcpy(shared->cmd_line, cmd_line, PGSIZE);
@@ -213,7 +215,7 @@ void process_exit(void) {
     pagedir_destroy(pd);
   }
 
-  printf("%s: exit(%d)\n", cur->pcb->process_name, cur->pcb->shared->exit_status);
+  printf("%d %s: exit(%d)\n", cur->tid, cur->pcb->process_name, cur->pcb->shared->exit_status);
 
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
