@@ -81,7 +81,9 @@ SYSCALL_DEFINE(sc_exec, SYS_EXEC, args, char* cmd_line) {
   if (!get_str((uint8_t*)args->cmd_line, (uint8_t*)cl_copy, PGSIZE))
     segfault();
 
-  return process_execute(cl_copy);
+  int result = process_execute(cl_copy);
+  palloc_free_page(cl_copy);
+  return result;
 }
 
 SYSCALL_DEFINE(sc_wait, SYS_WAIT, args, pid_t pid) { return process_wait(args->pid); }
@@ -194,8 +196,10 @@ SYSCALL_DEFINE(sc_write, SYS_WRITE, args, int fd, void* src, unsigned size) {
   char* buf = malloc(args->size);
   if (buf == NULL)
     return -1;
-  if (!get_bytes(args->src, (uint8_t*)buf, args->size))
+  if (!get_bytes(args->src, (uint8_t*)buf, args->size)) {
+    free(buf);
     segfault();
+  }
 
   if (args->fd == 1) {
     putbuf(buf, args->size);
