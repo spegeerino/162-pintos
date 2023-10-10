@@ -44,7 +44,7 @@ void userprog_init(void) {
   bool success;
 
   /* Allocate process control block
-     It is imoprtant that this is a call to calloc and not malloc,
+     It is important that this is a call to calloc and not malloc,
      so that t->pcb->pagedir is guaranteed to be NULL (the kernel's
      page directory) when t->pcb is assigned, because a timer interrupt
      can come at any time and activate our pagedir */
@@ -57,9 +57,7 @@ void userprog_init(void) {
   list_init(&t->pcb->children_shared);
   lock_init(&global_filesys_lock);
 
-  // want to reserve fd 0 and 1 for stdin and out.
-  // note that there are not actually files there, just abstractions
-  t->pcb->next_fd = 2;
+  t->pcb->next_fd = 3;
 }
 
 /* Starts a new thread running a user program loaded from
@@ -224,29 +222,37 @@ void process_exit(void) {
      can try to activate the pagedir, but it is now freed memory */
   struct process* pcb_to_free = cur->pcb;
   cur->pcb = NULL;
-  // need to sema_up on shared wait_sema to tell parent to wake up
+
+  /* Up the wait_sema so parent will finish waiting */
   sema_up(&pcb_to_free->shared->wait_sema);
-  arc_dec_ref(&pcb_to_free->shared->arc);
-  struct list_elem* e;
-  for (e = list_begin(&pcb_to_free->children_shared); e != list_end(&pcb_to_free->children_shared);
-       e = list_next(e)) {
-    struct shared_proc_data* child_shared = list_entry(e, struct shared_proc_data, elem);
-    arc_dec_ref(&child_shared->arc);
+  arc_dec_ref(&pcb_to_free->shared->arc); // done with shared data
+
+  /* Don't need list of children's shared data anymore, so loop through */
+  struct list_elem* e = list_begin(&pcb_to_free->children_shared);
+  while (e != list_end(&pcb_to_free->children_shared)) {
+    struct shared_proc_data* child = list_entry(e, struct shared_proc_data, elem);
+    e = list_next(e);
+    arc_dec_ref(&child->arc);
   }
-  // reallow writes to executable
+
   lock_acquire(&global_filesys_lock);
-  // closing file reallows writes to exec
+
+  /* Close own exec file (will allow write too) */
   file_close(pcb_to_free->self_exec_file);
-  for (int fd = 2; fd < NOFILE; fd++) {
-    struct file* file_to_close = pcb_to_free->open_files[fd];
-    if (file_to_close != NULL) {
-      file_close(file_to_close);
-    }
+
+  /* Close any open files */
+  e = list_begin(&pcb_to_free->open_files);
+  while (e != list_end(&pcb_to_free->open_files)) {
+    struct open_file* file = list_entry(e, struct open_file, elem);
+    file_close(file->file);
+    e = list_next(e);
+    free(file);
   }
+
   lock_release(&global_filesys_lock);
 
+  /* Finally, free PCB and exit */
   free(pcb_to_free);
-
   thread_exit();
 }
 
@@ -299,16 +305,14 @@ static bool setup_pcb(struct shared_proc_data* shared) {
 
   /* Initialize the PCB as normal */
   t->pcb->main_thread = t;
+  t->pcb->next_fd = 3;
   strlcpy(t->pcb->process_name, t->name, sizeof t->name);
-  memset(t->pcb->open_files, 0, sizeof(t->pcb->open_files));
+  list_init(&t->pcb->children_shared);
+  list_init(&t->pcb->open_files);
 
   /* Take ownership of shared data */
   arc_inc_ref(&shared->arc);
   t->pcb->shared = shared;
-
-  /* Set up rest of PCB */
-  list_init(&t->pcb->children_shared);
-  t->pcb->next_fd = 3;
 
   return true;
 }

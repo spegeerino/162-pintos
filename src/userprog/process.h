@@ -1,6 +1,7 @@
 #ifndef USERPROG_PROCESS_H
 #define USERPROG_PROCESS_H
 
+#include "list.h"
 #include "threads/arc.h"
 #include "threads/thread.h"
 #include <stdint.h>
@@ -9,7 +10,6 @@
 // These defines will be used in Project 2: Multithreading
 #define MAX_STACK_PAGES (1 << 11)
 #define MAX_THREADS 127
-#define NOFILE 256
 
 extern struct lock global_filesys_lock;
 
@@ -32,13 +32,18 @@ struct process {
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
 
-  struct shared_proc_data*
-      shared; /* Data shared between process and its parent for exec/wait syscalls */
-  struct list children_shared; /* List of children's process data (exec/wait) */
+  struct shared_proc_data* shared; /* Data shared between process and its parent (exec/wait)  */
+  struct list children_shared;     /* List of children's process data (exec/wait) */
 
-  struct file* open_files[NOFILE]; /* Array of process's open files */
-  int next_fd;                     /* Next available index in open_files */
-  struct file* self_exec_file;     /* Pointer to file executable to deny_write to executable */
+  struct list open_files;      /* List of process's open files */
+  struct file* self_exec_file; /* Pointer to file executable to deny_write to executable */
+  int next_fd;
+};
+
+struct open_file {
+  int fd;
+  struct file* file;
+  struct list_elem elem;
 };
 
 struct shared_proc_data {

@@ -6,6 +6,7 @@
 #include <syscall-nr.h>
 #include "devices/input.h"
 #include "devices/shutdown.h"
+#include "list.h"
 #include "tests/filesys/base/syn-write.h"
 #include "threads/arc.h"
 #include "threads/interrupt.h"
@@ -123,48 +124,53 @@ SYSCALL_DEFINE(sc_open, SYS_OPEN, args, char* file_name) {
   if (!strlcpy_from_user(fn_copy, args->file_name, 16))
     segfault();
 
-  // finds next open entry in fd table, potentially
-  while (pcb->open_files[pcb->next_fd] != NULL) {
-    // a bit odd syntax, but basically this increments by 1 unless equal to NOFILE - 1, in which case sets to be 2.
-    pcb->next_fd = 2 + ((pcb->next_fd - 1) % (NOFILE - 2));
-  }
-
-  /* Opn the file, making sure to acquire the lock */
-  lock_acquire(&global_filesys_lock);
-  struct file* output = filesys_open(fn_copy);
-  lock_release(&global_filesys_lock);
-
-  if (output == NULL)
+  /* Allocate space for the new open file */
+  struct open_file* file = malloc(sizeof *file);
+  if (file == NULL)
     return -1;
 
-  // puts the created file* into the fd table
-  pcb->open_files[pcb->next_fd] = output;
-  return pcb->next_fd;
+  /* Open the file, making sure to acquire the lock */
+  lock_acquire(&global_filesys_lock);
+  file->fd = pcb->next_fd++;
+  file->file = filesys_open(fn_copy);
+  lock_release(&global_filesys_lock);
+
+  if (file->file == NULL) {
+    free(file);
+    return -1;
+  }
+
+  // puts the created struct file* into the fd table
+  list_push_back(&pcb->open_files, &file->elem);
+  return file->fd;
 }
 
 /* Looks up a FD in the current thread's PCB. */
-static struct file* fd_lookup(int fd) {
+static struct open_file* fd_lookup(int fd_to_lookup) {
   struct process* pcb = thread_current()->pcb;
-  if (fd < 0 || fd >= NOFILE)
+  if (fd_to_lookup < 2)
     return NULL;
-  return pcb->open_files[fd];
+  return list_find(&pcb->open_files, struct open_file, elem, file, file->fd == fd_to_lookup);
 }
 
 SYSCALL_DEFINE(sc_filesize, SYS_FILESIZE, args, int fd) {
   /* Look up FD from OFD */
-  struct file* file = fd_lookup(args->fd);
+  struct open_file* file = fd_lookup(args->fd);
   if (file == NULL)
     return -1;
 
   /* Return length of the file, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  off_t output = file_length(file);
+  off_t output = file_length(file->file);
   lock_release(&global_filesys_lock);
 
   return output;
 }
 
 SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
+  if (args->size == 0)
+    return 0;
+
   /* Handle reading from stdin (fd == 0). */
   if (args->fd == 0) {
     for (unsigned i = 0; i < args->size; i++)
@@ -174,13 +180,9 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
   }
 
   /* Look up FD from OFD */
-  struct file* file = fd_lookup(args->fd);
+  struct open_file* file = fd_lookup(args->fd);
   if (file == NULL)
     return -1;
-
-  /* Reading 0 bytes should succeed */
-  if (args->size == 0)
-    return 0;
 
   /* Allocate temporary buffer in kernel memory */
   uint8_t* buf = malloc(args->size);
@@ -189,7 +191,7 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
 
   /* Read from file to temporary buffer, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  int result = file_read(file, buf, args->size);
+  int result = file_read(file->file, buf, args->size);
   lock_release(&global_filesys_lock);
 
   /* Copy to user memory using the helper (this handles segfaults) */
@@ -224,13 +226,13 @@ SYSCALL_DEFINE(sc_write, SYS_WRITE, args, int fd, void* src, unsigned size) {
   }
 
   /* Look up FD from OFD */
-  struct file* file = fd_lookup(args->fd);
+  struct open_file* file = fd_lookup(args->fd);
   if (file == NULL)
     return -1;
 
   /* Read from temporary buffer to file, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  int result = file_write(file, args->src, args->size);
+  int result = file_write(file->file, args->src, args->size);
   lock_release(&global_filesys_lock);
 
   return result;
@@ -238,13 +240,13 @@ SYSCALL_DEFINE(sc_write, SYS_WRITE, args, int fd, void* src, unsigned size) {
 
 SYSCALL_DEFINE(sc_seek, SYS_SEEK, args, int fd, unsigned position) {
   /* Look up FD from OFD */
-  struct file* file = fd_lookup(args->fd);
+  struct open_file* file = fd_lookup(args->fd);
   if (file == NULL)
     return -1;
 
   /* Seek, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  file_seek(file, args->position);
+  file_seek(file->file, args->position);
   lock_release(&global_filesys_lock);
 
   return 0;
@@ -252,27 +254,27 @@ SYSCALL_DEFINE(sc_seek, SYS_SEEK, args, int fd, unsigned position) {
 
 SYSCALL_DEFINE(sc_tell, SYS_TELL, args, int fd) {
   /* Look up FD from OFD */
-  struct file* file = fd_lookup(args->fd);
+  struct open_file* file = fd_lookup(args->fd);
   if (file == NULL)
     return -1;
 
   /* Don't need to acquire the lock here */
-  return file_tell(file);
+  return file_tell(file->file);
 }
 
 SYSCALL_DEFINE(sc_close, SYS_CLOSE, args, int fd) {
   /* Look up FD from OFD */
-  struct file* file = fd_lookup(args->fd);
+  struct open_file* file = fd_lookup(args->fd);
   if (file == NULL)
     return -1;
 
   lock_acquire(&global_filesys_lock);
-  file_close(file);
+  file_close(file->file);
   lock_release(&global_filesys_lock);
 
-  // re-references the entry in the fd table to NULL
-  thread_current()->pcb->open_files[args->fd] = NULL;
-
+  /* Remove from the OFD table */
+  list_remove(&file->elem);
+  free(file);
   return 0;
 }
 
