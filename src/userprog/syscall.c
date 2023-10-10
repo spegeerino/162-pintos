@@ -69,7 +69,6 @@ SYSCALL_DEFINE(sc_halt, SYS_HALT, args UNUSED) {
 
 SYSCALL_DEFINE(sc_exit, SYS_EXIT, args, uint32_t status) {
   thread_current()->pcb->shared->exit_status = args->status;
-  printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args->status);
   process_exit();
 
   NOT_REACHED();

@@ -213,6 +213,8 @@ void process_exit(void) {
     pagedir_destroy(pd);
   }
 
+  printf("%s: exit(%d)\n", cur->pcb->process_name, cur->pcb->shared->exit_status);
+
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
      If this happens, then an unfortuantely timed timer interrupt
