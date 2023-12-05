@@ -3,14 +3,16 @@
 #include <debug.h>
 #include <round.h>
 #include <string.h>
+#include "devices/block.h"
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
+#include "devices/timer.h"
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
-
+/* Size of filesystem buffer cache. */
 #define BUFFER_SIZE 64
 
 /* Returns the number of sectors to allocate for an inode SIZE
@@ -35,6 +37,9 @@ static struct filesys_cache_entry buffer_cache[BUFFER_SIZE];
 
 /* Helper functions. */
 void flush_cache_entry(int);
+void replace_cache_entry(int, block_sector_t);
+struct filesys_cache_entry* add_cache_entry(block_sector_t);
+struct filesys_cache_entry* search_cache(block_sector_t, bool);
 
 /* Returns the block device sector that contains byte offset POS
    within INODE.
@@ -72,13 +77,50 @@ void inode_done(void) {
 void flush_cache_entry(int i) {
   struct filesys_cache_entry to_flush = buffer_cache[i];
   block_write(fs_device, to_flush.sector, to_flush.contents);
+  to_flush.modified = false;
 }
 
-/* Evicts buffer cache entry at index i. */
-void evict_cache_entry(int i) {
-  struct filesys_cache_entry to_evict = buffer_cache[i];
-  if (to_evict.modified)
-    flush_cache_entry(i);
+/* Evicts buffer cache entry at index i and replaces it with
+   new entry with new sector. */
+void replace_cache_entry(int i, block_sector_t sector) {
+  struct filesys_cache_entry to_replace = buffer_cache[i];
+  rw_lock_acquire(&to_replace.entry_lock, false);
+  if (to_replace.modified)
+    flush_cache_entry(i); // sets .modified to false
+  to_replace.sector = sector;
+  to_replace.last_used_tick = timer_ticks();
+  // replace contents
+  block_read(fs_device, to_replace.sector, (void*)to_replace.contents);
+  rw_lock_release(&to_replace.entry_lock, false);
+}
+
+/* Evict least recently used cache block and replace it with newly needed sector. */
+struct filesys_cache_entry* add_cache_entry(block_sector_t sector) {
+  int to_evict_idx = 0;
+  int earliest_used = buffer_cache[0].last_used_tick;
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    if (!buffer_cache[i].valid) {
+      to_evict_idx = i;
+      break;
+    }
+    if (buffer_cache[i].last_used_tick < earliest_used) {
+      to_evict_idx = i;
+      earliest_used = buffer_cache[i].last_used_tick;
+    }
+  }
+  replace_cache_entry(to_evict_idx, sector);
+  return &buffer_cache[to_evict_idx];
+}
+
+/* Searches through cache to see if given sector is present. */
+struct filesys_cache_entry* search_cache(block_sector_t sector, bool reader) {
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    if (sector == buffer_cache[i].sector) {
+      rw_lock_acquire(&buffer_cache[i].entry_lock, reader);
+      return &buffer_cache[i];
+    }
+  }
+  return NULL;
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -194,20 +236,19 @@ void inode_remove(struct inode* inode) {
 off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset) {
   /* Check cache for desired filesys entry. */
   lock_acquire(&cache_lock);
-
-  /* If present, acquire entry lock. */
-
-  /* Otherwise, pick entry to evict and evict it. */
-
+  block_sector_t sector = byte_to_sector(inode, offset);
+  struct filesys_cache_entry* to_read_from = search_cache(sector, true); 
+  if (to_read_from == NULL) {
+    to_read_from = add_cache_entry(sector);
+    rw_lock_acquire(&to_read_from->entry_lock, true);
+  }
   lock_release(&cache_lock);
 
   uint8_t* buffer = buffer_;
   off_t bytes_read = 0;
-  uint8_t* bounce = NULL;
 
   while (size > 0) {
     /* Disk sector to read, starting byte offset within sector. */
-    block_sector_t sector_idx = byte_to_sector(inode, offset);
     int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
     /* Bytes left in inode, bytes left in sector, lesser of the two. */
@@ -220,28 +261,27 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
     if (chunk_size <= 0)
       break;
 
-    if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE) {
-      /* Read full sector directly into caller's buffer. */
-      block_read(fs_device, sector_idx, buffer + bytes_read);
-    } else {
-      /* Read sector into bounce buffer, then partially copy
-             into caller's buffer. */
-      if (bounce == NULL) {
-        bounce = malloc(BLOCK_SECTOR_SIZE);
-        if (bounce == NULL)
-          break;
-      }
-      block_read(fs_device, sector_idx, bounce);
-      memcpy(buffer + bytes_read, bounce + sector_ofs, chunk_size);
-    }
+    /* Copy bytes to buffer. */
+    memcpy(buffer + bytes_read, to_read_from->contents + sector_ofs, chunk_size);
 
     /* Advance. */
     size -= chunk_size;
     offset += chunk_size;
     bytes_read += chunk_size;
+    /* Update cache if new sector required. */
+    if (size > 0 && sector_left == chunk_size) {
+      lock_acquire(&cache_lock);
+      rw_lock_release(&to_read_from->entry_lock, true);
+      block_sector_t next_sector = byte_to_sector(inode, offset);
+      to_read_from = search_cache(next_sector, true);
+      if (to_read_from == NULL) {
+        to_read_from = add_cache_entry(next_sector);
+        rw_lock_acquire(&to_read_from->entry_lock, true);
+      }
+      lock_release(&cache_lock);
+    }
   }
-  free(bounce);
-
+  rw_lock_release(&to_read_from->entry_lock, true);
   return bytes_read;
 }
 
@@ -251,16 +291,28 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
    (Normally a write at end of file would extend the inode, but
    growth is not yet implemented.) */
 off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t offset) {
+  /* Check cache for desired entry. */
+  
+  block_sector_t sector = byte_to_sector(inode, offset);
+
+  lock_acquire(&cache_lock);
+  struct filesys_cache_entry* to_write_to = search_cache(sector, false);
+  if (to_write_to == NULL) {
+    to_write_to = add_cache_entry(sector);
+    rw_lock_acquire(&to_write_to->entry_lock, false);
+  }
+  lock_release(&cache_lock);
+
   const uint8_t* buffer = buffer_;
   off_t bytes_written = 0;
-  uint8_t* bounce = NULL;
 
-  if (inode->deny_write_cnt)
+  if (inode->deny_write_cnt) {
+    rw_lock_release(&to_write_to->entry_lock, false);
     return 0;
+  }
 
   while (size > 0) {
     /* Sector to write, starting byte offset within sector. */
-    block_sector_t sector_idx = byte_to_sector(inode, offset);
     int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
     /* Bytes left in inode, bytes left in sector, lesser of the two. */
@@ -273,35 +325,30 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
     if (chunk_size <= 0)
       break;
 
-    if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE) {
-      /* Write full sector directly to disk. */
-      block_write(fs_device, sector_idx, buffer + bytes_written);
-    } else {
-      /* We need a bounce buffer. */
-      if (bounce == NULL) {
-        bounce = malloc(BLOCK_SECTOR_SIZE);
-        if (bounce == NULL)
-          break;
-      }
+    to_write_to->modified = true;
 
-      /* If the sector contains data before or after the chunk
-             we're writing, then we need to read in the sector
-             first.  Otherwise we start with a sector of all zeros. */
-      if (sector_ofs > 0 || chunk_size < sector_left)
-        block_read(fs_device, sector_idx, bounce);
-      else
-        memset(bounce, 0, BLOCK_SECTOR_SIZE);
-      memcpy(bounce + sector_ofs, buffer + bytes_written, chunk_size);
-      block_write(fs_device, sector_idx, bounce);
-    }
+    /* Copy bytes to buffer. */
+    memcpy(to_write_to->contents + sector_ofs, buffer + bytes_written, chunk_size);
 
     /* Advance. */
     size -= chunk_size;
     offset += chunk_size;
     bytes_written += chunk_size;
-  }
-  free(bounce);
 
+    /* Fetch next sector if necessary. */
+    if (size > 0 && sector_left == chunk_size) {
+      lock_acquire(&cache_lock);
+      rw_lock_release(&to_write_to->entry_lock, false);
+      block_sector_t next_sector = byte_to_sector(inode, offset);
+      to_write_to = search_cache(next_sector, false);
+      if (to_write_to == NULL) {
+        to_write_to = add_cache_entry(next_sector);
+        rw_lock_acquire(&to_write_to->entry_lock, false);
+      }
+      lock_release(&cache_lock);
+    }
+  }
+  rw_lock_release(&to_write_to->entry_lock, false);
   return bytes_written;
 }
 
