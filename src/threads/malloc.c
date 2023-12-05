@@ -255,3 +255,12 @@ static struct block* arena_to_block(struct arena* a, size_t idx) {
   ASSERT(idx < a->desc->blocks_per_arena);
   return (struct block*)((uint8_t*)a + sizeof *a + idx * a->desc->block_size);
 }
+
+char* strdup(const char* src) {
+  size_t size = strlen(src) + 1;
+  char* dst = malloc(size);
+  strlcpy(dst, src, size);
+  return dst;
+}
+
+void _autofree(void* ptr) { free(*(void**)ptr); }

@@ -156,3 +156,5 @@ static bool page_from_pool(const struct pool* pool, void* page) {
 
   return page_no >= start_page && page_no < end_page;
 }
+
+void _autofreepage(void* ptr) { palloc_free_page(*(void**)ptr); }
