@@ -32,6 +32,23 @@ void filesys_init(bool format) {
    to disk. */
 void filesys_done(void) { free_map_close(); }
 
+/* Extracts the directory path and file name from a given path.
+   Returns the file name and sets *PATH to the directory path.
+   WARNING: This function is extremely cursed.
+   It mutates the original string to insert a null terminator if necessary.
+   Somehow it's the least painful way I found to accomplish this. */
+static char* extract_file_name(char** path) {
+  char* last_sep = strrchr(*path, '/');
+  if (last_sep == NULL) {
+    char* result = *path;
+    *path = "";
+    return result;
+  } else {
+    *last_sep = '\0';
+    return last_sep + 1;
+  }
+}
+
 /* Creates a file named NAME with the given INITIAL_SIZE.
    Returns true if successful, false otherwise.
    Fails if a file named NAME already exists,
