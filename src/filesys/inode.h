@@ -8,13 +8,16 @@
 
 struct bitmap;
 
+enum inode_type { FILE, DIRECTORY };
+
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk {
   block_sector_t start; /* First data sector. */
   off_t length;         /* File size in bytes. */
+  enum inode_type type; /* Inode type. */
+  uint32_t unused[124]; /* Not used. */
   unsigned magic;       /* Magic number. */
-  uint32_t unused[125]; /* Not used. */
 };
 
 /* In-memory inode. */
@@ -28,7 +31,7 @@ struct inode {
 };
 
 void inode_init(void);
-bool inode_create(block_sector_t, off_t);
+bool inode_create(block_sector_t, off_t, enum inode_type);
 struct inode* inode_open(block_sector_t);
 struct inode* inode_reopen(struct inode*);
 block_sector_t inode_get_inumber(const struct inode*);

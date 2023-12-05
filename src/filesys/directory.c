@@ -6,6 +6,9 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
+// FIXME: This can be removed when extensible files are implemented.
+#define DIR_MAX_ENTRIES 16
+
 /* A directory. */
 struct dir {
   struct inode* inode; /* Backing store. */
@@ -21,15 +24,37 @@ struct dir_entry {
 
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
-bool dir_create(block_sector_t sector, size_t entry_cnt) {
-  return inode_create(sector, entry_cnt * sizeof(struct dir_entry));
+bool dir_create(block_sector_t sector, block_sector_t parent_sector) {
+  if (!inode_create(sector, DIR_MAX_ENTRIES * sizeof(struct dir_entry), DIRECTORY))
+    return false;
+
+  struct inode* inode = inode_open(sector);
+  if (inode == NULL)
+    goto cleanup;
+  struct dir* dir = dir_open(inode);
+  if (dir == NULL)
+    goto cleanup;
+
+  dir_add(dir, ".", sector);
+  dir_add(dir, "..", parent_sector);
+  return true;
+
+cleanup:
+  // FIXME:
+  // We need to remove the disk allocated for the inode in the case
+  // that disk allocation succeeds but the inode_open fails.
+  // However, I'm not sure how to do this, since you need to inode_open
+  // an inode to remove it.
+  // Maybe push it into a list of inodes to be removed later?
+  // But lists probably require allocation too lol.
+  return false;
 }
 
 /* Opens and returns the directory for the given INODE, of which
    it takes ownership.  Returns a null pointer on failure. */
 struct dir* dir_open(struct inode* inode) {
   struct dir* dir = calloc(1, sizeof *dir);
-  if (inode != NULL && dir != NULL) {
+  if (inode != NULL && dir != NULL && inode->data.type == DIRECTORY) {
     dir->inode = inode;
     dir->pos = 0;
     return dir;
