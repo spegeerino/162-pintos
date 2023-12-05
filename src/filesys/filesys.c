@@ -6,6 +6,7 @@
 #include "filesys/free-map.h"
 #include "filesys/inode.h"
 #include "filesys/directory.h"
+#include "threads/malloc.h"
 
 /* Partition that contains the file system. */
 struct block* fs_device;
@@ -53,17 +54,31 @@ static char* extract_file_name(char** path) {
    Returns true if successful, false otherwise.
    Fails if a file named NAME already exists,
    or if internal memory allocation fails. */
-bool filesys_create(const char* name, off_t initial_size) {
-  block_sector_t inode_sector = 0;
-  struct dir* dir = dir_open_root();
-  bool success =
-      (dir != NULL && free_map_allocate(1, &inode_sector) &&
-       inode_create(inode_sector, initial_size, FILE) && dir_add(dir, name, inode_sector));
-  if (!success && inode_sector != 0)
-    free_map_release(inode_sector, 1);
-  dir_close(dir);
+bool filesys_create(const char* _path, off_t initial_size) {
+  autofree char* path_copy = strdup(_path);
+  char* path = path_copy;
+  char* name = extract_file_name(&path);
 
-  return success;
+  struct dir* dir = dir_open_root();
+  if (dir == NULL)
+    return false;
+
+  block_sector_t inode_sector = 0;
+  if (!free_map_allocate(1, &inode_sector))
+    return false;
+  if (!inode_create(inode_sector, initial_size, FILE))
+    goto cleanup;
+  if (!dir_add(dir, name, inode_sector))
+    goto cleanup;
+
+  dir_close(dir);
+  return true;
+
+cleanup:
+  // FIXME: See comment in dir_create.
+  free_map_release(inode_sector, 1);
+  dir_close(dir);
+  return false;
 }
 
 /* Opens the file with the given NAME.
