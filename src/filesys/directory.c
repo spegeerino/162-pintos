@@ -180,7 +180,6 @@ done:
 bool dir_remove(struct dir* dir, const char* name) {
   struct dir_entry e;
   struct inode* inode = NULL;
-  bool success = false;
   off_t ofs;
 
   ASSERT(dir != NULL);
@@ -188,25 +187,40 @@ bool dir_remove(struct dir* dir, const char* name) {
 
   /* Find directory entry. */
   if (!lookup(dir, name, &e, &ofs))
-    goto done;
+    return false;
 
   /* Open inode. */
   inode = inode_open(e.inode_sector);
   if (inode == NULL)
-    goto done;
+    return false;
+
+  /* Make sure directories are empty */
+  if (inode->data.type == DIRECTORY) {
+    struct dir* child_dir = dir_open(inode);
+
+    char name[NAME_MAX + 1];
+    while (dir_readdir(child_dir, name)) {
+      if (strcmp(name, ".") != 0 || strcmp(name, "..") != 0)
+        continue;
+
+      /* Fail if there is still an entry that is not . or .. */
+      dir_close(child_dir);
+      return false;
+    }
+  }
 
   /* Erase directory entry. */
   e.in_use = false;
-  if (inode_write_at(dir->inode, &e, sizeof e, ofs) != sizeof e)
-    goto done;
+  if (inode_write_at(dir->inode, &e, sizeof e, ofs) != sizeof e) {
+    inode_close(inode);
+    return false;
+  }
 
   /* Remove inode. */
   inode_remove(inode);
-  success = true;
-
-done:
   inode_close(inode);
-  return success;
+
+  return true;
 }
 
 /* Reads the next directory entry in DIR and stores the name in
