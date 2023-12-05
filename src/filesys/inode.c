@@ -6,13 +6,35 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
+#include "threads/synch.h"
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 
+#define BUFFER_SIZE 64
+
 /* Returns the number of sectors to allocate for an inode SIZE
    bytes long. */
 static inline size_t bytes_to_sectors(off_t size) { return DIV_ROUND_UP(size, BLOCK_SECTOR_SIZE); }
+
+/* Cache entry for file data buffer. */
+struct filesys_cache_entry {
+  struct rw_lock entry_lock;           /* rwlock for writing to this entry */
+  bool valid;                          /* whether this cache entry is valid */
+  bool modified;                       /* whether this sector has been modified */
+  block_sector_t sector;               /* which sector this entry is for (tag) */
+  int64_t last_used_tick;              /* tick the sector was last used (LRU replacement)*/
+  uint8_t contents[BLOCK_SECTOR_SIZE]; /* contents of the sector */
+};
+
+/* Lock for iterating over/evicting from cache. */
+static struct lock cache_lock;
+
+/* The filesystem buffer cache. */
+static struct filesys_cache_entry buffer_cache[BUFFER_SIZE];
+
+/* Helper functions. */
+void flush_cache_entry(int);
 
 /* Returns the block device sector that contains byte offset POS
    within INODE.
@@ -31,7 +53,33 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
 static struct list open_inodes;
 
 /* Initializes the inode module. */
-void inode_init(void) { list_init(&open_inodes); }
+void inode_init(void) {
+  list_init(&open_inodes);
+  lock_init(&cache_lock);
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    rw_lock_init(&buffer_cache[i].entry_lock);
+  }
+}
+
+/* Frees all resources in the inode module. */
+void inode_done(void) {
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    flush_cache_entry(i);
+  }
+}
+
+/* Flushes buffer cache entry at index i. */
+void flush_cache_entry(int i) {
+  struct filesys_cache_entry to_flush = buffer_cache[i];
+  block_write(fs_device, to_flush.sector, to_flush.contents);
+}
+
+/* Evicts buffer cache entry at index i. */
+void evict_cache_entry(int i) {
+  struct filesys_cache_entry to_evict = buffer_cache[i];
+  if (to_evict.modified)
+    flush_cache_entry(i);
+}
 
 /* Initializes an inode with LENGTH bytes of data and
    writes the new inode to sector SECTOR on the file system
@@ -144,6 +192,15 @@ void inode_remove(struct inode* inode) {
    Returns the number of bytes actually read, which may be less
    than SIZE if an error occurs or end of file is reached. */
 off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset) {
+  /* Check cache for desired filesys entry. */
+  lock_acquire(&cache_lock);
+
+  /* If present, acquire entry lock. */
+
+  /* Otherwise, pick entry to evict and evict it. */
+
+  lock_release(&cache_lock);
+
   uint8_t* buffer = buffer_;
   off_t bytes_read = 0;
   uint8_t* bounce = NULL;
