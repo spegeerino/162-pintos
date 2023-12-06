@@ -40,6 +40,7 @@ void flush_cache_entry(int);
 void replace_cache_entry(int, block_sector_t);
 struct filesys_cache_entry* add_cache_entry(block_sector_t);
 struct filesys_cache_entry* search_cache(block_sector_t, bool);
+struct filesys_cache_entry* ensure_cache_entry(block_sector_t, bool);
 
 /* Returns the block device sector that contains byte offset POS
    within INODE.
@@ -83,15 +84,16 @@ void flush_cache_entry(int i) {
 /* Evicts buffer cache entry at index i and replaces it with
    new entry with new sector. */
 void replace_cache_entry(int i, block_sector_t sector) {
-  struct filesys_cache_entry to_replace = buffer_cache[i];
-  rw_lock_acquire(&to_replace.entry_lock, false);
-  if (to_replace.modified)
+  struct filesys_cache_entry* to_replace = &buffer_cache[i];
+  rw_lock_acquire(&to_replace->entry_lock, false);
+  lock_release(&cache_lock); // can't block on IO
+  if (to_replace->modified)
     flush_cache_entry(i); // sets .modified to false
-  to_replace.sector = sector;
-  to_replace.last_used_tick = timer_ticks();
-  // replace contents
-  block_read(fs_device, to_replace.sector, (void*)to_replace.contents);
-  rw_lock_release(&to_replace.entry_lock, false);
+  to_replace->sector = sector;
+  to_replace->last_used_tick = timer_ticks(); 
+  block_read(fs_device, to_replace->sector, (void*)to_replace->contents); // replace contents
+  to_replace->valid = true;
+  rw_lock_release(&to_replace->entry_lock, false);
 }
 
 /* Evict least recently used cache block and replace it with newly needed sector. */
@@ -108,11 +110,14 @@ struct filesys_cache_entry* add_cache_entry(block_sector_t sector) {
       earliest_used = buffer_cache[i].last_used_tick;
     }
   }
-  replace_cache_entry(to_evict_idx, sector);
+  replace_cache_entry(to_evict_idx, sector); // releases cache lock
   return &buffer_cache[to_evict_idx];
 }
 
-/* Searches through cache to see if given sector is present. */
+/* Searches through cache to see if given sector is present. 
+   This function must be called with the cache lock held 
+   to prevent race conditions.
+*/
 struct filesys_cache_entry* search_cache(block_sector_t sector, bool reader) {
   for (int i = 0; i < BUFFER_SIZE; i++) {
     if (sector == buffer_cache[i].sector) {
@@ -121,6 +126,35 @@ struct filesys_cache_entry* search_cache(block_sector_t sector, bool reader) {
     }
   }
   return NULL;
+}
+
+/* Ensures that the cache has the desired sector in the cache, 
+   then acquires the entry lock for that entry.
+   It does this by either finding the entry already present in the cache,
+   or evicting something else from cache and writing the desired sector to the cache
+   from disk. 
+   
+   This function must be called while holding the cache lock.
+   It will release the cache lock before returning.
+   */
+struct filesys_cache_entry* ensure_cache_entry(block_sector_t sector, bool reader) {
+  struct filesys_cache_entry* out = search_cache(sector, reader);
+  if (out != NULL) {
+    lock_release(&cache_lock);
+    return out;
+  }
+  /* Cache entry not present, need to add it and check for the cache */
+  out = add_cache_entry(sector); // releases cache lock
+  /* Currently holding no locks, so we can't be sure 
+      that our entry is still the entry we want. */
+  lock_acquire(&cache_lock);
+  if (out->sector == sector) { // Cache entry is still present
+    rw_lock_acquire(&out->entry_lock, reader);
+    lock_release(&cache_lock);
+    return out;
+  }
+  // Our cache entry got evicted, need to try again
+  return ensure_cache_entry(sector, reader);
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -234,16 +268,15 @@ void inode_remove(struct inode* inode) {
    Returns the number of bytes actually read, which may be less
    than SIZE if an error occurs or end of file is reached. */
 off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset) {
-  /* Check cache for desired filesys entry. */
-  lock_acquire(&cache_lock);
   block_sector_t sector = byte_to_sector(inode, offset);
-  struct filesys_cache_entry* to_read_from = search_cache(sector, true); 
-  if (to_read_from == NULL) {
-    to_read_from = add_cache_entry(sector);
-    rw_lock_acquire(&to_read_from->entry_lock, true);
+  if (sector == (uint32_t)-1) {
+    // inode does not contain data for a block at offset offset
+    return 0;
   }
-  lock_release(&cache_lock);
-
+  lock_acquire(&cache_lock);
+  struct filesys_cache_entry* to_read_from = ensure_cache_entry(sector, true);
+  /* Now guaranteed to have a valid cache entry at to_read_from while holding 
+     the rw_lock as a reader. */
   uint8_t* buffer = buffer_;
   off_t bytes_read = 0;
 
@@ -268,19 +301,16 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
     size -= chunk_size;
     offset += chunk_size;
     bytes_read += chunk_size;
+
     /* Update cache if new sector required. */
     if (size > 0 && sector_left == chunk_size) {
-      lock_acquire(&cache_lock);
-      rw_lock_release(&to_read_from->entry_lock, true);
       block_sector_t next_sector = byte_to_sector(inode, offset);
-      to_read_from = search_cache(next_sector, true);
-      if (to_read_from == NULL) {
-        to_read_from = add_cache_entry(next_sector);
-        rw_lock_acquire(&to_read_from->entry_lock, true);
-      }
-      lock_release(&cache_lock);
+      rw_lock_release(&to_read_from->entry_lock, true);
+      lock_acquire(&cache_lock); 
+      to_read_from = ensure_cache_entry(next_sector, true);
     }
   }
+
   rw_lock_release(&to_read_from->entry_lock, true);
   return bytes_read;
 }
@@ -292,16 +322,9 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
    growth is not yet implemented.) */
 off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t offset) {
   /* Check cache for desired entry. */
-  
   block_sector_t sector = byte_to_sector(inode, offset);
-
   lock_acquire(&cache_lock);
-  struct filesys_cache_entry* to_write_to = search_cache(sector, false);
-  if (to_write_to == NULL) {
-    to_write_to = add_cache_entry(sector);
-    rw_lock_acquire(&to_write_to->entry_lock, false);
-  }
-  lock_release(&cache_lock);
+  struct filesys_cache_entry* to_write_to = ensure_cache_entry(sector, false);
 
   const uint8_t* buffer = buffer_;
   off_t bytes_written = 0;
@@ -327,7 +350,7 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
 
     to_write_to->modified = true;
 
-    /* Copy bytes to buffer. */
+    /* Copy bytes from buffer. */
     memcpy(to_write_to->contents + sector_ofs, buffer + bytes_written, chunk_size);
 
     /* Advance. */
@@ -335,19 +358,15 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
     offset += chunk_size;
     bytes_written += chunk_size;
 
-    /* Fetch next sector if necessary. */
+    /* Update cache if new sector required. */
     if (size > 0 && sector_left == chunk_size) {
-      lock_acquire(&cache_lock);
-      rw_lock_release(&to_write_to->entry_lock, false);
       block_sector_t next_sector = byte_to_sector(inode, offset);
-      to_write_to = search_cache(next_sector, false);
-      if (to_write_to == NULL) {
-        to_write_to = add_cache_entry(next_sector);
-        rw_lock_acquire(&to_write_to->entry_lock, false);
-      }
-      lock_release(&cache_lock);
+      rw_lock_release(&to_write_to->entry_lock, false);
+      lock_acquire(&cache_lock);
+      to_write_to = ensure_cache_entry(next_sector, false);
     }
   }
+
   rw_lock_release(&to_write_to->entry_lock, false);
   return bytes_written;
 }
