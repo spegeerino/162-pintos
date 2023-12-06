@@ -131,6 +131,42 @@ bool dir_lookup(const struct dir* dir, const char* name, struct inode** inode) {
   return *inode != NULL;
 }
 
+/* Resolves the given PATH starting at DIR to a file
+   and returns true if successful, false otherwise.
+   On success, sets *INODE to an inode for the file, otherwise to
+   a null pointer.  The caller must close *INODE. */
+bool dir_resolve(struct dir* dir, const char* _path, struct inode** inode) {
+  autofree char* path = strdup(_path);
+  char* saveptr;
+
+  /* Start at the root by default, or for absolute paths. */
+  if (dir == NULL || path[0] == '/') {
+    *inode = inode_open(ROOT_DIR_SECTOR);
+  } else {
+    *inode = inode_reopen(dir->inode);
+  }
+
+  /* If inode_(re)open failed */
+  if (dir == NULL)
+    return NULL;
+
+  /* Iterate through each component of the path. We must be
+     careful to make sure we close all intermediate inodes. */
+  for (char* s = strtok_r(path, "/", &saveptr); s != NULL; s = strtok_r(NULL, "/", &saveptr)) {
+    dir = dir_open(*inode);
+    if (dir == NULL || !dir_lookup(dir, s, inode))
+      goto cleanup;
+    dir_close(dir);
+  }
+
+  return true;
+
+cleanup:
+  dir_close(dir);
+  *inode = NULL;
+  return false;
+}
+
 /* Adds a file named NAME to DIR, which must not already contain a
    file by that name.  The file's inode is in sector
    INODE_SECTOR.
