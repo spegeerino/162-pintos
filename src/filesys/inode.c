@@ -301,6 +301,7 @@ off_t inode_read_at(struct inode* inode, void* buffer_, off_t size, off_t offset
     size -= chunk_size;
     offset += chunk_size;
     bytes_read += chunk_size;
+    to_read_from->last_used_tick = timer_ticks();
 
     /* Update cache if new sector required. */
     if (size > 0 && sector_left == chunk_size) {
@@ -357,9 +358,10 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
     size -= chunk_size;
     offset += chunk_size;
     bytes_written += chunk_size;
+    to_write_to->last_used_tick = timer_ticks();
 
     /* Update cache if new sector required. */
-    if (size > 0 && sector_left == chunk_size) {
+    if (size > 0 && inode_left > chunk_size) { // sector_left = chunk_size and we have more to write
       block_sector_t next_sector = byte_to_sector(inode, offset);
       rw_lock_release(&to_write_to->entry_lock, false);
       lock_acquire(&cache_lock);
