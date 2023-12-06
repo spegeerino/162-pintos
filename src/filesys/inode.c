@@ -62,7 +62,7 @@ static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
       struct indirect_block indirect_block;
       block_read(fs_device, inode_disk.indirect[indirect_block_idx], &indirect_block);
 
-      return indirect_block.sector_arr[indirect_block_idx];
+      return indirect_block.sector_arr[GET_DIRECT_BLOCK_INDEX(block_idx)];
     }
   } else
     return -1;
@@ -280,6 +280,8 @@ off_t inode_write_at(struct inode* inode, const void* buffer_, off_t size, off_t
       free(disk_inode);
       return 0;
     }
+    disk_inode->length = offset + size;
+    block_write(fs_device, inode->sector, disk_inode);
   }
 
   while (size > 0) {
