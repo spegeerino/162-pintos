@@ -96,15 +96,17 @@ SYSCALL_DEFINE(sc_wait, SYS_WAIT, args, pid_t pid) { return process_wait(args->p
 // File operation syscalls
 // =======================
 
-SYSCALL_DEFINE(sc_create, SYS_CREATE, args, char* file_name, unsigned initial_size) {
-  char fn_copy[16];
-  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
+SYSCALL_DEFINE(sc_create, SYS_CREATE, args, char* path, unsigned initial_size) {
+  autofreepage char* path = palloc_get_page(0);
+  if (path == NULL)
+    return false;
+  if (!strlcpy_from_user(path, args->path, PGSIZE))
     segfault();
 
   lock_acquire(&global_filesys_lock);
-  uint32_t output = filesys_create(fn_copy, args->initial_size);
+  bool result = filesys_create(thread_current()->pcb->cwd, path, args->initial_size);
   lock_release(&global_filesys_lock);
-  return output;
+  return result;
 }
 
 SYSCALL_DEFINE(sc_remove, SYS_REMOVE, args, char* file_name) {

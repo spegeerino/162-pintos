@@ -54,14 +54,20 @@ static char* extract_file_name(char** path) {
    Returns true if successful, false otherwise.
    Fails if a file named NAME already exists,
    or if internal memory allocation fails. */
-bool filesys_create(const char* _path, off_t initial_size) {
+bool filesys_create(struct dir* cwd, const char* _path, off_t initial_size) {
   autofree char* path_copy = strdup(_path);
   char* path = path_copy;
   char* name = extract_file_name(&path);
 
-  struct dir* dir = dir_open_root();
-  if (dir == NULL)
+  struct inode* inode;
+  dir_resolve(cwd, path, &inode);
+  if (inode == NULL)
     return false;
+  struct dir* dir = dir_open(inode);
+  if (dir == NULL) {
+    inode_close(inode);
+    return false;
+  }
 
   block_sector_t inode_sector = 0;
   if (!free_map_allocate(1, &inode_sector))
