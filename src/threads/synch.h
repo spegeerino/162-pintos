@@ -51,6 +51,7 @@ struct rw_lock {
 void rw_lock_init(struct rw_lock*);
 void rw_lock_acquire(struct rw_lock*, bool reader);
 void rw_lock_release(struct rw_lock*, bool reader);
+void rw_lock_downgrade(struct rw_lock*);
 
 /* Optimization barrier.
 

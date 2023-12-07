@@ -29,6 +29,7 @@
 #include "threads/synch.h"
 #include <stdio.h>
 #include <string.h>
+#include "synch.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
@@ -271,6 +272,20 @@ void rw_lock_release(struct rw_lock* rw_lock, bool reader) {
     else if (rw_lock->WR > 0)
       cond_broadcast(&rw_lock->read, &rw_lock->lock);
   }
+
+  // Release guard lock
+  lock_release(&rw_lock->lock);
+}
+
+/* Downgrade from a writer to a reader */
+void rw_lock_downgrade(struct rw_lock* rw_lock) {
+  // Must hold the guard lock the entire time
+  lock_acquire(&rw_lock->lock);
+
+  // Wake all waiting readers
+  rw_lock->AW--;
+  if (rw_lock->WR > 0)
+    cond_broadcast(&rw_lock->read, &rw_lock->lock);
 
   // Release guard lock
   lock_release(&rw_lock->lock);
