@@ -42,8 +42,11 @@ static char* extract_file_name(char** path) {
   char* last_sep = strrchr(*path, '/');
   if (last_sep == NULL) {
     char* result = *path;
-    *path = "";
+    *path = ".";
     return result;
+  } else if (last_sep == *path) {
+    *path = "/";
+    return last_sep + 1;
   } else {
     *last_sep = '\0';
     return last_sep + 1;
