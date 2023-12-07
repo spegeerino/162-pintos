@@ -5,26 +5,38 @@
 #include <stdbool.h>
 #include "filesys/off_t.h"
 #include "devices/block.h"
+#include "threads/synch.h"
 
 struct bitmap;
+
+/* Constants regarding inode structure. */
+#define NUM_DIRECT_POINTERS 124
+#define NUM_INDIRECT_POINTERS 2
+#define INDIRECT_BLOCK_CAPACITY (BLOCK_SECTOR_SIZE / sizeof(block_sector_t))
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk {
-  block_sector_t start; /* First data sector. */
-  off_t length;         /* File size in bytes. */
-  unsigned magic;       /* Magic number. */
-  uint32_t unused[125]; /* Not used. */
+  off_t length;                                   /* File size in bytes. */
+  block_sector_t direct[NUM_DIRECT_POINTERS];     /* Pointers to direct data blocks. */
+  block_sector_t indirect[NUM_INDIRECT_POINTERS]; /* Pointers to indirect blocks. */
+  unsigned magic;                                 /* Magic number. */
+  uint8_t unused[0]; /* Fills up struct to have size BLOCK_SECTOR_SIZE. */
 };
 
 /* In-memory inode. */
 struct inode {
-  struct list_elem elem;  /* Element in inode list. */
-  block_sector_t sector;  /* Sector number of disk location. */
-  int open_cnt;           /* Number of openers. */
-  bool removed;           /* True if deleted, false otherwise. */
-  int deny_write_cnt;     /* 0: writes ok, >0: deny writes. */
-  struct inode_disk data; /* Inode content. */
+  struct lock lock;      /* Syncrhonization lock. */
+  struct list_elem elem; /* Element in inode list. */
+  block_sector_t sector; /* Sector number of disk location. */
+  int open_cnt;          /* Number of openers. */
+  bool removed;          /* True if deleted, false otherwise. */
+  int deny_write_cnt;    /* 0: writes ok, >0: deny writes. */
+};
+
+/* Disk indirect block. */
+struct indirect_block {
+  block_sector_t sector_arr[INDIRECT_BLOCK_CAPACITY];
 };
 
 void inode_init(void);
