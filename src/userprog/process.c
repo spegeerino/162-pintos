@@ -303,6 +303,13 @@ static bool setup_pcb(struct shared_proc_data* shared) {
   new_pcb->pagedir = NULL;
   t->pcb = new_pcb;
 
+  /* Set the current working directory to the root directory */
+  lock_acquire(&global_filesys_lock);
+  t->pcb->cwd = dir_open_root();
+  lock_release(&global_filesys_lock);
+  if (t->pcb->cwd == NULL)
+    return false;
+
   /* Initialize the PCB as normal */
   t->pcb->main_thread = t;
   t->pcb->next_fd = 3;

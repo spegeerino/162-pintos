@@ -31,6 +31,7 @@ struct process {
   uint32_t* pagedir;          /* Page directory. */
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
+  struct dir* cwd;            /* Current working directory */
 
   struct shared_proc_data* shared; /* Data shared between process and its parent (exec/wait)  */
   struct list children_shared;     /* List of children's process data (exec/wait) */
