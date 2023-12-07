@@ -1,4 +1,3 @@
-
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -6,6 +5,9 @@
 #include <syscall-nr.h>
 #include "devices/input.h"
 #include "devices/shutdown.h"
+#include "filesys/directory.h"
+#include "filesys/inode.h"
+#include "filesys/off_t.h"
 #include "list.h"
 #include "tests/filesys/base/syn-write.h"
 #include "threads/arc.h"
@@ -28,6 +30,8 @@ void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "
 
 /* Functions for reading and writing user memory */
 static void segfault(void);
+static void segfault_freeing(void*);
+static void segfault_freeing_page(void*);
 static bool get_byte(const char* uaddr, char* buf);
 static bool put_byte(char* udst, char byte);
 
@@ -52,33 +56,33 @@ struct syscall {
 #define ARG_STRUCT(...)
 // clang-format on
 
-#define SYSCALL_DEFINE(NAME, SYSCALL_NUMBER, ARGS, ...)                                            \
+#define SYSCALL_DEFINE(NAME, SYSCALL_NUMBER, RET_TYPE, ARGS, ...)                                  \
   struct __##NAME##_args {                                                                         \
     ARG_FIELDS(__VA_ARGS__)                                                                        \
   };                                                                                               \
-  static uint32_t __##NAME##_impl(struct __##NAME##_args* ARGS);                                   \
-  static uint32_t __##NAME##_handler(void* args) { return __##NAME##_impl(args); }                 \
+  static RET_TYPE __##NAME##_impl(struct __##NAME##_args* ARGS);                                   \
+  static uint32_t __##NAME##_handler(void* args) { return (uint32_t)__##NAME##_impl(args); }       \
   struct syscall NAME = {SYSCALL_NUMBER, __##NAME##_handler, sizeof(struct __##NAME##_args)};      \
-  static uint32_t __##NAME##_impl(struct __##NAME##_args* ARGS)
+  static RET_TYPE __##NAME##_impl(struct __##NAME##_args* ARGS)
 
 // ========================
 // Process control syscalls
 // ========================
 
-SYSCALL_DEFINE(sc_practice, SYS_PRACTICE, args, uint32_t value) { return args->value + 1; }
+SYSCALL_DEFINE(sc_practice, SYS_PRACTICE, int, args, int value) { return args->value + 1; }
 
-SYSCALL_DEFINE(sc_halt, SYS_HALT, args UNUSED) {
+SYSCALL_DEFINE(sc_halt, SYS_HALT, void*, args UNUSED) {
   shutdown_power_off();
   NOT_REACHED();
 }
 
-SYSCALL_DEFINE(sc_exit, SYS_EXIT, args, uint32_t status) {
+SYSCALL_DEFINE(sc_exit, SYS_EXIT, void*, args, int status) {
   thread_current()->pcb->shared->exit_status = args->status;
   process_exit();
   NOT_REACHED();
 }
 
-SYSCALL_DEFINE(sc_exec, SYS_EXEC, args, char* cmd_line) {
+SYSCALL_DEFINE(sc_exec, SYS_EXEC, int, args, char* cmd_line) {
   char* cl_copy = palloc_get_page(0);
   if (cl_copy == NULL)
     return -1;
@@ -90,84 +94,124 @@ SYSCALL_DEFINE(sc_exec, SYS_EXEC, args, char* cmd_line) {
   return result;
 }
 
-SYSCALL_DEFINE(sc_wait, SYS_WAIT, args, pid_t pid) { return process_wait(args->pid); }
+SYSCALL_DEFINE(sc_wait, SYS_WAIT, int, args, pid_t pid) { return process_wait(args->pid); }
 
 // =======================
 // File operation syscalls
 // =======================
 
-SYSCALL_DEFINE(sc_create, SYS_CREATE, args, char* file_name, unsigned initial_size) {
-  char fn_copy[16];
-  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
-    segfault();
+SYSCALL_DEFINE(sc_create, SYS_CREATE, bool, args, char* path, unsigned initial_size) {
+  /* Copy path from user memory */
+  autofreepage char* path = palloc_get_page(0);
+  if (path == NULL)
+    return false;
+  if (!strlcpy_from_user(path, args->path, PGSIZE))
+    segfault_freeing_page(path);
 
+  /* Create file */
   lock_acquire(&global_filesys_lock);
-  uint32_t output = filesys_create(fn_copy, args->initial_size);
+  bool result = filesys_create_file(thread_current()->pcb->cwd, path, args->initial_size);
   lock_release(&global_filesys_lock);
-  return output;
+
+  return result;
 }
 
-SYSCALL_DEFINE(sc_remove, SYS_REMOVE, args, char* file_name) {
-  char fn_copy[16];
-  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
-    segfault();
+SYSCALL_DEFINE(sc_remove, SYS_REMOVE, bool, args, char* path) {
+  /* Copy path from user memory */
+  autofreepage char* path = palloc_get_page(0);
+  if (path == NULL)
+    return false;
+  if (!strlcpy_from_user(path, args->path, PGSIZE))
+    segfault_freeing_page(path);
 
+  /* Remove file */
   lock_acquire(&global_filesys_lock);
-  int output = filesys_remove(fn_copy);
+  bool result = filesys_remove(thread_current()->pcb->cwd, path);
   lock_release(&global_filesys_lock);
-  return output;
+
+  return result;
 }
 
-SYSCALL_DEFINE(sc_open, SYS_OPEN, args, char* file_name) {
+SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* path) {
   struct process* pcb = thread_current()->pcb;
-  char fn_copy[16];
-  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
-    segfault();
 
-  /* Allocate space for the new open file */
-  struct open_file* file = malloc(sizeof *file);
-  if (file == NULL)
+  /* Copy path from user memory */
+  autofreepage char* path = palloc_get_page(0);
+  if (path == NULL)
+    return -1;
+  if (!strlcpy_from_user(path, args->path, PGSIZE))
+    segfault_freeing_page(path);
+
+  /* Allocate space for the new open inode */
+  struct open_inode* inode = malloc(sizeof *inode);
+  if (inode == NULL)
     return -1;
 
-  /* Open the file, making sure to acquire the lock */
+  /* Make sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  file->fd = pcb->next_fd++;
-  file->file = filesys_open(fn_copy);
-  lock_release(&global_filesys_lock);
 
-  if (file->file == NULL) {
-    free(file);
-    return -1;
+  /* Open the inode */
+  struct inode* inner = filesys_open(pcb->cwd, path);
+  if (inner == NULL)
+    goto cleanup;
+
+  /* If inode is a directory */
+  if (inner->data.type == DIRECTORY) {
+    inode->type = DIRECTORY;
+    inode->dir = dir_open(inner);
+    if (inode->dir == NULL)
+      goto cleanup;
   }
 
+  /* If inode is a file */
+  else if (inner->data.type == FILE) {
+    inode->type = FILE;
+    inode->file = file_open(inner);
+    if (inode->file == NULL)
+      goto cleanup;
+  }
+
+  /* This should not happen but just in case */
+  else {
+    goto cleanup;
+  }
+
+  inode->fd = pcb->next_fd++;
+  lock_release(&global_filesys_lock);
+
   // puts the created struct file* into the fd table
-  list_push_back(&pcb->open_files, &file->elem);
-  return file->fd;
+  list_push_back(&pcb->open_inodes, &inode->elem);
+  return inode->fd;
+
+cleanup:;
+  lock_release(&global_filesys_lock);
+  free(inode);
+  return -1;
 }
 
 /* Looks up a FD in the current thread's PCB. */
-static struct open_file* fd_lookup(int fd_to_lookup) {
+static struct open_inode* fd_lookup(int fd_to_lookup) {
   struct process* pcb = thread_current()->pcb;
   if (fd_to_lookup < 2)
     return NULL;
-  return list_find(&pcb->open_files, struct open_file, elem, file, file->fd == fd_to_lookup);
+  return list_find(&pcb->open_inodes, struct open_inode, elem, file, file->fd == fd_to_lookup);
 }
 
-SYSCALL_DEFINE(sc_filesize, SYS_FILESIZE, args, int fd) {
+SYSCALL_DEFINE(sc_filesize, SYS_FILESIZE, off_t, args, int fd) {
   /* Look up FD from OFD */
-  struct open_file* file = fd_lookup(args->fd);
-  if (file == NULL)
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL || inode->type != FILE)
     return -1;
 
   /* Return length of the file, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  off_t output = file_length(file->file);
+  off_t output = file_length(inode->file);
   lock_release(&global_filesys_lock);
 
   return output;
 }
 
-SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
+SYSCALL_DEFINE(sc_read, SYS_READ, off_t, args, int fd, void* dst, unsigned size) {
   if (args->size == 0)
     return 0;
 
@@ -180,8 +224,8 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
   }
 
   /* Look up FD from OFD */
-  struct open_file* file = fd_lookup(args->fd);
-  if (file == NULL)
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL || inode->type != FILE)
     return -1;
 
   /* Allocate temporary buffer in kernel memory */
@@ -191,7 +235,7 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
 
   /* Read from file to temporary buffer, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  int result = file_read(file->file, buf, args->size);
+  off_t result = file_read(inode->file, buf, args->size);
   lock_release(&global_filesys_lock);
 
   /* Copy to user memory using the helper (this handles segfaults) */
@@ -204,7 +248,7 @@ SYSCALL_DEFINE(sc_read, SYS_READ, args, int fd, void* dst, unsigned size) {
   return result;
 }
 
-SYSCALL_DEFINE(sc_write, SYS_WRITE, args, int fd, void* src, unsigned size) {
+SYSCALL_DEFINE(sc_write, SYS_WRITE, off_t, args, int fd, void* src, unsigned size) {
   if (args->size == 0)
     return 0;
 
@@ -226,63 +270,152 @@ SYSCALL_DEFINE(sc_write, SYS_WRITE, args, int fd, void* src, unsigned size) {
   }
 
   /* Look up FD from OFD */
-  struct open_file* file = fd_lookup(args->fd);
-  if (file == NULL)
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL || inode->type != FILE)
     return -1;
 
   /* Read from temporary buffer to file, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  int result = file_write(file->file, args->src, args->size);
+  off_t result = file_write(inode->file, args->src, args->size);
   lock_release(&global_filesys_lock);
 
   return result;
 }
 
-SYSCALL_DEFINE(sc_seek, SYS_SEEK, args, int fd, unsigned position) {
+SYSCALL_DEFINE(sc_seek, SYS_SEEK, int, args, int fd, unsigned position) {
   /* Look up FD from OFD */
-  struct open_file* file = fd_lookup(args->fd);
-  if (file == NULL)
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL || inode->type != FILE)
     return -1;
 
   /* Seek, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  file_seek(file->file, args->position);
+  file_seek(inode->file, args->position);
   lock_release(&global_filesys_lock);
 
   return 0;
 }
 
-SYSCALL_DEFINE(sc_tell, SYS_TELL, args, int fd) {
+SYSCALL_DEFINE(sc_tell, SYS_TELL, off_t, args, int fd) {
   /* Look up FD from OFD */
-  struct open_file* file = fd_lookup(args->fd);
-  if (file == NULL)
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL || inode->type != FILE)
     return -1;
 
   /* Don't need to acquire the lock here */
-  return file_tell(file->file);
+  return file_tell(inode->file);
 }
 
-SYSCALL_DEFINE(sc_close, SYS_CLOSE, args, int fd) {
+SYSCALL_DEFINE(sc_close, SYS_CLOSE, int, args, int fd) {
   /* Look up FD from OFD */
-  struct open_file* file = fd_lookup(args->fd);
-  if (file == NULL)
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL)
     return -1;
 
+  /* Close the file or directory, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
-  file_close(file->file);
+  if (inode->type == DIRECTORY)
+    dir_close(inode->dir);
+  else if (inode->type == FILE)
+    file_close(inode->file);
   lock_release(&global_filesys_lock);
 
   /* Remove from the OFD table */
-  list_remove(&file->elem);
-  free(file);
+  list_remove(&inode->elem);
+  free(inode);
   return 0;
+}
+
+SYSCALL_DEFINE(sc_chdir, SYS_CHDIR, bool, args, char* dir) {
+  /* Copy path from user memory */
+  autofreepage char* path = palloc_get_page(0);
+  if (path == NULL)
+    return false;
+  if (!strlcpy_from_user(path, args->dir, PGSIZE))
+    segfault_freeing_page(path);
+
+  /* Open new directory */
+  lock_acquire(&global_filesys_lock);
+  struct dir* dir = filesys_open_dir(thread_current()->pcb->cwd, path);
+  lock_release(&global_filesys_lock);
+  if (dir == NULL)
+    return false;
+
+  /* Close old directory */
+  lock_acquire(&global_filesys_lock);
+  dir_close(thread_current()->pcb->cwd);
+  lock_release(&global_filesys_lock);
+
+  /* Set CWD in PCB */
+  thread_current()->pcb->cwd = dir;
+
+  return true;
+}
+
+SYSCALL_DEFINE(sc_mkdir, SYS_MKDIR, bool, args, char* dir) {
+  /* Copy path from user memory */
+  autofreepage char* path = palloc_get_page(0);
+  if (path == NULL)
+    return false;
+  if (!strlcpy_from_user(path, args->dir, PGSIZE))
+    segfault_freeing_page(path);
+
+  /* Create directory */
+  lock_acquire(&global_filesys_lock);
+  bool result = filesys_create_dir(thread_current()->pcb->cwd, path);
+  lock_release(&global_filesys_lock);
+
+  return result;
+}
+
+SYSCALL_DEFINE(sc_readdir, SYS_READDIR, bool, args, int fd, char* name) {
+  /* Look up FD from OFD */
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL || inode->type != DIRECTORY)
+    return false;
+
+  /* Read directory entry, making sure to acquire the lock */
+  lock_acquire(&global_filesys_lock);
+  char name[NAME_MAX + 1];
+  bool result = dir_readdir(inode->dir, name);
+  lock_release(&global_filesys_lock);
+
+  /* Copy name to user memory */
+  if (!memcpy_to_user(args->name, name, NAME_MAX + 1))
+    segfault();
+
+  return result;
+}
+
+SYSCALL_DEFINE(sc_isdir, SYS_ISDIR, bool, args, int fd) {
+  /* Look up FD from OFD */
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL)
+    return false;
+
+  return inode->type == DIRECTORY;
+}
+
+SYSCALL_DEFINE(sc_inumber, SYS_INUMBER, int, args, int fd) {
+  /* Look up FD from OFD */
+  struct open_inode* inode = fd_lookup(args->fd);
+  if (inode == NULL)
+    return -1;
+
+  /* Call on the corresponding inode */
+  if (inode->type == DIRECTORY)
+    return inode_get_inumber(inode->dir->inode);
+  else if (inode->type == FILE)
+    return inode_get_inumber(inode->file->inode);
+
+  return -1;
 }
 
 // =================================
 // Floating point operation syscalls
 // =================================
 
-SYSCALL_DEFINE(sc_compute_e, SYS_COMPUTE_E, args, int n) {
+SYSCALL_DEFINE(sc_compute_e, SYS_COMPUTE_E, int, args, int n) {
   if (args->n < 0)
     return -1;
   return sys_sum_to_e(args->n);
@@ -310,6 +443,11 @@ struct syscall* syscall_table[] = {
     &sc_seek,
     &sc_tell,
     &sc_close,
+    &sc_chdir,
+    &sc_mkdir,
+    &sc_readdir,
+    &sc_isdir,
+    &sc_inumber,
 
     // Floating point operation syscalls
     &sc_compute_e,
@@ -347,6 +485,16 @@ static void syscall_handler(struct intr_frame* f) {
 static void segfault() {
   uint32_t args[] = {-1};
   sc_exit.handler(args);
+}
+
+static void segfault_freeing(void* ptr) {
+  free(ptr);
+  segfault();
+}
+
+static void segfault_freeing_page(void* ptr) {
+  palloc_free_page(ptr);
+  segfault();
 }
 
 // =======

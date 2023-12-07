@@ -237,16 +237,20 @@ void process_exit(void) {
 
   lock_acquire(&global_filesys_lock);
 
-  /* Close own exec file (will allow write too) */
+  /* Close own exec file and CWD (will allow write too) */
   file_close(pcb_to_free->self_exec_file);
+  dir_close(pcb_to_free->cwd);
 
   /* Close any open files */
-  e = list_begin(&pcb_to_free->open_files);
-  while (e != list_end(&pcb_to_free->open_files)) {
-    struct open_file* file = list_entry(e, struct open_file, elem);
-    file_close(file->file);
+  e = list_begin(&pcb_to_free->open_inodes);
+  while (e != list_end(&pcb_to_free->open_inodes)) {
+    struct open_inode* inode = list_entry(e, struct open_inode, elem);
     e = list_next(e);
-    free(file);
+    if (inode->type == DIRECTORY)
+      dir_close(inode->dir);
+    else if (inode->type == FILE)
+      file_close(inode->file);
+    free(inode);
   }
 
   lock_release(&global_filesys_lock);
@@ -303,12 +307,19 @@ static bool setup_pcb(struct shared_proc_data* shared) {
   new_pcb->pagedir = NULL;
   t->pcb = new_pcb;
 
+  /* Set the current working directory to the root directory */
+  lock_acquire(&global_filesys_lock);
+  t->pcb->cwd = dir_open_root();
+  lock_release(&global_filesys_lock);
+  if (t->pcb->cwd == NULL)
+    return false;
+
   /* Initialize the PCB as normal */
   t->pcb->main_thread = t;
   t->pcb->next_fd = 3;
   strlcpy(t->pcb->process_name, t->name, sizeof t->name);
   list_init(&t->pcb->children_shared);
-  list_init(&t->pcb->open_files);
+  list_init(&t->pcb->open_inodes);
 
   /* Take ownership of shared data */
   arc_inc_ref(&shared->arc);
@@ -446,7 +457,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   lock_acquire(&global_filesys_lock);
 
   /* Open executable file. */
-  file = filesys_open(file_name);
+  file = filesys_open_file(NULL, file_name);
   if (file == NULL) {
     printf("load: %s: open failed\n", file_name);
     goto done;
