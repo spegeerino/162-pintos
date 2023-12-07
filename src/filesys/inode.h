@@ -12,18 +12,21 @@ struct bitmap;
 enum inode_type { FILE, DIRECTORY };
 
 /* Constants regarding inode structure. */
-#define NUM_DIRECT_POINTERS 123
-#define NUM_INDIRECT_POINTERS 2
-#define INDIRECT_BLOCK_CAPACITY (BLOCK_SECTOR_SIZE / sizeof(block_sector_t))
+
+#define INDIRECT_CAPACITY (BLOCK_SECTOR_SIZE / sizeof(block_sector_t))
+#define DIRECT_MAX 123
+#define INDIRECT_MAX (DIRECT_MAX + INDIRECT_CAPACITY)
+#define DOUBLY_INDIRECT_MAX (INDIRECT_MAX + INDIRECT_CAPACITY * INDIRECT_CAPACITY)
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk {
-  off_t length;                                   /* File size in bytes. */
-  enum inode_type type;                           /* FILE or DIRECTORY. */
-  block_sector_t direct[NUM_DIRECT_POINTERS];     /* Pointers to direct data blocks. */
-  block_sector_t indirect[NUM_INDIRECT_POINTERS]; /* Pointers to indirect blocks. */
-  unsigned magic;                                 /* Magic number. */
+  off_t length;                      /* File size in bytes. */
+  enum inode_type type;              /* FILE or DIRECTORY. */
+  block_sector_t direct[DIRECT_MAX]; /* Pointers to direct data blocks. */
+  block_sector_t indirect;           /* Pointers to indirect block. */
+  block_sector_t doubly_indirect;    /* Pointers to doubly indirect block. */
+  unsigned magic;                    /* Magic number. */
 };
 
 /* In-memory inode. */
@@ -38,9 +41,7 @@ struct inode {
 };
 
 /* Disk indirect block. */
-struct indirect_block {
-  block_sector_t sector_arr[INDIRECT_BLOCK_CAPACITY];
-};
+typedef block_sector_t indirect_block_t[INDIRECT_CAPACITY];
 
 void inode_init(void);
 void inode_done(void);
