@@ -12,6 +12,12 @@
    retained, but much longer full path names must be allowed. */
 #define NAME_MAX 14
 
+/* A directory. */
+struct dir {
+  struct inode* inode; /* Backing store. */
+  off_t pos;           /* Current position. */
+};
+
 /* Opening and closing directories. */
 bool dir_create(block_sector_t sector, block_sector_t parent_sector);
 struct dir* dir_open(struct inode*);
