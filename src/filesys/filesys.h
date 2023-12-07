@@ -14,7 +14,8 @@ extern struct block* fs_device;
 
 void filesys_init(bool format);
 void filesys_done(void);
-bool filesys_create(struct dir* cwd, const char* path, off_t initial_size);
+bool filesys_create_file(struct dir* cwd, const char* path, off_t initial_size);
+bool filesys_create_dir(struct dir* cwd, const char* path);
 struct inode* filesys_open(struct dir* cwd, const char* path);
 struct file* filesys_open_file(struct dir* cwd, const char* path);
 struct dir* filesys_open_dir(struct dir* cwd, const char* path);

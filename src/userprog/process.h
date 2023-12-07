@@ -1,6 +1,7 @@
 #ifndef USERPROG_PROCESS_H
 #define USERPROG_PROCESS_H
 
+#include "filesys/inode.h"
 #include "list.h"
 #include "threads/arc.h"
 #include "threads/thread.h"
@@ -36,15 +37,19 @@ struct process {
   struct shared_proc_data* shared; /* Data shared between process and its parent (exec/wait)  */
   struct list children_shared;     /* List of children's process data (exec/wait) */
 
-  struct list open_files;      /* List of process's open files */
+  struct list open_inodes;     /* List of process's open files */
   struct file* self_exec_file; /* Pointer to file executable to deny_write to executable */
   int next_fd;
 };
 
-struct open_file {
+struct open_inode {
   int fd;
-  struct file* file;
+  enum inode_type type;
   struct list_elem elem;
+  union {
+    struct dir* dir;
+    struct file* file;
+  };
 };
 
 struct shared_proc_data {

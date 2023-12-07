@@ -57,7 +57,7 @@ static char* extract_file_name(char** path) {
    Returns true if successful, false otherwise.
    Fails if a file named NAME already exists,
    or if internal memory allocation fails. */
-bool filesys_create(struct dir* cwd, const char* _path, off_t initial_size) {
+bool filesys_create_file(struct dir* cwd, const char* _path, off_t initial_size) {
   autofree char* path_copy = strdup(_path);
   char* path = path_copy;
   char* name = extract_file_name(&path);
@@ -84,6 +84,37 @@ cleanup:
   return false;
 }
 
+/* Creates a file named NAME with the given INITIAL_SIZE.
+   Returns true if successful, false otherwise.
+   Fails if a file named NAME already exists,
+   or if internal memory allocation fails. */
+bool filesys_create_dir(struct dir* cwd, const char* _path) {
+  autofree char* path_copy = strdup(_path);
+  char* path = path_copy;
+  char* name = extract_file_name(&path);
+
+  struct dir* dir = filesys_open_dir(cwd, path);
+  if (dir == NULL)
+    return false;
+
+  block_sector_t inode_sector = 0;
+  if (!free_map_allocate(1, &inode_sector))
+    return false;
+  if (!dir_create(inode_sector, dir->inode->sector))
+    goto cleanup;
+  if (!dir_add(dir, name, inode_sector))
+    goto cleanup;
+
+  dir_close(dir);
+  return true;
+
+cleanup:
+  // FIXME: See comment in dir_create.
+  free_map_release(inode_sector, 1);
+  dir_close(dir);
+  return false;
+}
+
 /* Opens the inode at the given PATH.
    Returns the new inode if successful or a null pointer
    otherwise.
@@ -93,7 +124,7 @@ struct inode* filesys_open(struct dir* cwd, const char* path) {
   struct dir* dir = cwd == NULL ? dir_open_root() : dir_reopen(cwd);
   struct inode* inode = NULL;
 
-  if (dir != NULL)
+  if (dir != NULL && !dir->inode->removed)
     dir_resolve(dir, path, &inode);
   dir_close(dir);
 
@@ -137,9 +168,14 @@ bool filesys_remove(struct dir* cwd, const char* _path) {
   if (dir == NULL)
     return false;
 
-  dir_remove(dir, name);
+  if (!dir_remove(dir, name))
+    goto cleanup;
   dir_close(dir);
   return true;
+
+cleanup:
+  dir_close(dir);
+  return false;
 }
 
 /* Formats the file system. */
