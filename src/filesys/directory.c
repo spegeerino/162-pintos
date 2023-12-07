@@ -6,9 +6,6 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
-// FIXME: This can be removed when extensible files are implemented.
-#define DIR_MAX_ENTRIES 16
-
 /* A single directory entry. */
 struct dir_entry {
   block_sector_t inode_sector; /* Sector number of header. */
@@ -19,7 +16,7 @@ struct dir_entry {
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool dir_create(block_sector_t sector, block_sector_t parent_sector) {
-  if (!inode_create(sector, DIR_MAX_ENTRIES * sizeof(struct dir_entry), DIRECTORY))
+  if (!inode_create(sector, 0, DIRECTORY))
     return false;
 
   struct inode* inode = inode_open(sector);
