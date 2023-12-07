@@ -131,6 +131,7 @@ struct inode* inode_open(block_sector_t sector) {
     inode = list_entry(e, struct inode, elem);
     if (inode->sector == sector) {
       inode_reopen(inode);
+      lock_release(&open_inodes_lock);
       return inode;
     }
   }
@@ -154,9 +155,10 @@ struct inode* inode_open(block_sector_t sector) {
 
 /* Reopens and returns INODE. */
 struct inode* inode_reopen(struct inode* inode) {
+  if (inode == NULL)
+    return NULL;
   lock_acquire(&inode->lock);
-  if (inode != NULL)
-    inode->open_cnt++;
+  inode->open_cnt++;
   lock_release(&inode->lock);
   return inode;
 }
@@ -185,10 +187,12 @@ void inode_close(struct inode* inode) {
       memset(&disk_inode, 0, sizeof(struct inode_disk));
       block_read(fs_device, inode->sector, &disk_inode);
       free_inode_sectors(&disk_inode, 0);
+      free_map_release(inode->sector, 1);
     }
-    lock_release(&inode->lock);
     free(inode);
+    return;
   }
+  lock_release(&inode->lock);
 }
 
 /* Marks INODE to be deleted when it is closed by the last caller who
