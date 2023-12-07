@@ -140,7 +140,7 @@ struct inode* filesys_open(struct dir* cwd, const char* path) {
    or if an internal memory allocation fails. */
 struct file* filesys_open_file(struct dir* cwd, const char* path) {
   struct inode* inode = filesys_open(cwd, path);
-  if (inode != NULL && inode->data.type == FILE)
+  if (inode != NULL && inode->type == FILE)
     return file_open(inode);
   inode_close(inode);
   return NULL;
@@ -152,7 +152,7 @@ struct file* filesys_open_file(struct dir* cwd, const char* path) {
    or if an internal memory allocation fails. */
 struct dir* filesys_open_dir(struct dir* cwd, const char* path) {
   struct inode* inode = filesys_open(cwd, path);
-  if (inode != NULL && inode->data.type == DIRECTORY)
+  if (inode != NULL && inode->type == DIRECTORY)
     return dir_open(inode);
   inode_close(inode);
   return NULL;

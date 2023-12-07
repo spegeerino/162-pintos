@@ -156,7 +156,7 @@ SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* path) {
     goto cleanup;
 
   /* If inode is a directory */
-  if (inner->data.type == DIRECTORY) {
+  if (inner->type == DIRECTORY) {
     inode->type = DIRECTORY;
     inode->dir = dir_open(inner);
     if (inode->dir == NULL)
@@ -164,7 +164,7 @@ SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* path) {
   }
 
   /* If inode is a file */
-  else if (inner->data.type == FILE) {
+  else if (inner->type == FILE) {
     inode->type = FILE;
     inode->file = file_open(inner);
     if (inode->file == NULL)

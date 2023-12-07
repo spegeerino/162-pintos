@@ -48,7 +48,7 @@ cleanup:
    it takes ownership.  Returns a null pointer on failure. */
 struct dir* dir_open(struct inode* inode) {
   struct dir* dir = calloc(1, sizeof *dir);
-  if (inode != NULL && dir != NULL && inode->data.type == DIRECTORY) {
+  if (inode != NULL && dir != NULL && inode->type == DIRECTORY) {
     dir->inode = inode;
     dir->pos = 0;
     return dir;
@@ -232,7 +232,7 @@ bool dir_remove(struct dir* dir, const char* name) {
     return false;
 
   /* Make sure directories are empty */
-  if (inode->data.type == DIRECTORY) {
+  if (inode->type == DIRECTORY) {
     struct dir* child_dir = dir_open(inode);
 
     char name[NAME_MAX + 1];

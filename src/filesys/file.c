@@ -1,7 +1,9 @@
 #include "filesys/file.h"
 #include <debug.h>
+#include "devices/block.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "filesys/filesys.h"
 
 /* Opens a file for the given INODE, of which it takes ownership,
    and returns the new file.  Returns a null pointer if an
@@ -108,7 +110,11 @@ void file_allow_write(struct file* file) {
 /* Returns the size of FILE in bytes. */
 off_t file_length(struct file* file) {
   ASSERT(file != NULL);
-  return inode_length(file->inode);
+  struct inode_disk* disk_inode = calloc(1, BLOCK_SECTOR_SIZE);
+  block_read(fs_device, file->inode->sector, disk_inode);
+  size_t len = disk_inode->length;
+  free(disk_inode);
+  return len;
 }
 
 /* Sets the current position in FILE to NEW_POS bytes from the
