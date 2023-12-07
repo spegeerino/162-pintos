@@ -59,15 +59,9 @@ bool filesys_create(struct dir* cwd, const char* _path, off_t initial_size) {
   char* path = path_copy;
   char* name = extract_file_name(&path);
 
-  struct inode* inode;
-  dir_resolve(cwd, path, &inode);
-  if (inode == NULL)
+  struct dir* dir = filesys_open_dir(cwd, path);
+  if (dir == NULL)
     return false;
-  struct dir* dir = dir_open(inode);
-  if (dir == NULL) {
-    inode_close(inode);
-    return false;
-  }
 
   block_sector_t inode_sector = 0;
   if (!free_map_allocate(1, &inode_sector))
@@ -87,32 +81,62 @@ cleanup:
   return false;
 }
 
-/* Opens the file with the given NAME.
-   Returns the new file if successful or a null pointer
+/* Opens the inode at the given PATH.
+   Returns the new inode if successful or a null pointer
    otherwise.
-   Fails if no file named NAME exists,
+   Fails if no inode at PATH exists,
    or if an internal memory allocation fails. */
-struct file* filesys_open(const char* name) {
-  struct dir* dir = dir_open_root();
+struct inode* filesys_open(struct dir* cwd, const char* path) {
+  struct dir* dir = cwd == NULL ? dir_open_root() : dir_reopen(cwd);
   struct inode* inode = NULL;
 
   if (dir != NULL)
-    dir_lookup(dir, name, &inode);
+    dir_resolve(dir, path, &inode);
   dir_close(dir);
 
-  return file_open(inode);
+  return inode;
+}
+
+/* Opens the file at the given PATH.
+   Returns the file if successful or a null pointer otherwise.
+   Fails if no file at PATH exists,
+   or if an internal memory allocation fails. */
+struct file* filesys_open_file(struct dir* cwd, const char* path) {
+  struct inode* inode = filesys_open(cwd, path);
+  if (inode != NULL && inode->data.type == FILE)
+    return file_open(inode);
+  inode_close(inode);
+  return NULL;
+}
+
+/* Opens the directory at the given PATH.
+   Returns the directory if successful or a null pointer otherwise.
+   Fails if no directory at PATH exists,
+   or if an internal memory allocation fails. */
+struct dir* filesys_open_dir(struct dir* cwd, const char* path) {
+  struct inode* inode = filesys_open(cwd, path);
+  if (inode != NULL && inode->data.type == DIRECTORY)
+    return dir_open(inode);
+  inode_close(inode);
+  return NULL;
 }
 
 /* Deletes the file named NAME.
    Returns true if successful, false on failure.
    Fails if no file named NAME exists,
    or if an internal memory allocation fails. */
-bool filesys_remove(const char* name) {
-  struct dir* dir = dir_open_root();
-  bool success = dir != NULL && dir_remove(dir, name);
-  dir_close(dir);
+bool filesys_remove(struct dir* cwd, const char* _path) {
+  autofree char* path_copy = strdup(_path);
+  char* path = path_copy;
+  char* name = extract_file_name(&path);
 
-  return success;
+  struct dir* dir = filesys_open_dir(cwd, path);
+  if (dir == NULL)
+    return false;
+
+  dir_remove(dir, name);
+  dir_close(dir);
+  return true;
 }
 
 /* Formats the file system. */

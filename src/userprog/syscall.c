@@ -28,6 +28,8 @@ void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "
 
 /* Functions for reading and writing user memory */
 static void segfault(void);
+static void segfault_freeing(void*);
+static void segfault_freeing_page(void*);
 static bool get_byte(const char* uaddr, char* buf);
 static bool put_byte(char* udst, char byte);
 
@@ -101,7 +103,7 @@ SYSCALL_DEFINE(sc_create, SYS_CREATE, bool, args, char* path, unsigned initial_s
   if (path == NULL)
     return false;
   if (!strlcpy_from_user(path, args->path, PGSIZE))
-    segfault();
+    segfault_freeing_page(path);
 
   lock_acquire(&global_filesys_lock);
   bool result = filesys_create(thread_current()->pcb->cwd, path, args->initial_size);
@@ -109,22 +111,26 @@ SYSCALL_DEFINE(sc_create, SYS_CREATE, bool, args, char* path, unsigned initial_s
   return result;
 }
 
-SYSCALL_DEFINE(sc_remove, SYS_REMOVE, bool, args, char* file_name) {
-  char fn_copy[16];
-  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
-    segfault();
+SYSCALL_DEFINE(sc_remove, SYS_REMOVE, bool, args, char* path) {
+  autofreepage char* path = palloc_get_page(0);
+  if (path == NULL)
+    return false;
+  if (!strlcpy_from_user(path, args->path, PGSIZE))
+    segfault_freeing_page(path);
 
   lock_acquire(&global_filesys_lock);
-  int output = filesys_remove(fn_copy);
+  bool result = filesys_remove(thread_current()->pcb->cwd, path);
   lock_release(&global_filesys_lock);
-  return output;
+  return result;
 }
 
-SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* file_name) {
+SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* path) {
   struct process* pcb = thread_current()->pcb;
-  char fn_copy[16];
-  if (!strlcpy_from_user(fn_copy, args->file_name, 16))
-    segfault();
+  autofreepage char* path = palloc_get_page(0);
+  if (path == NULL)
+    return -1;
+  if (!strlcpy_from_user(path, args->path, PGSIZE))
+    segfault_freeing_page(path);
 
   /* Allocate space for the new open file */
   struct open_file* file = malloc(sizeof *file);
@@ -134,7 +140,7 @@ SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* file_name) {
   /* Open the file, making sure to acquire the lock */
   lock_acquire(&global_filesys_lock);
   file->fd = pcb->next_fd++;
-  file->file = filesys_open(fn_copy);
+  file->file = filesys_open_file(pcb->cwd, path);
   lock_release(&global_filesys_lock);
 
   if (file->file == NULL) {
@@ -349,6 +355,16 @@ static void syscall_handler(struct intr_frame* f) {
 static void segfault() {
   uint32_t args[] = {-1};
   sc_exit.handler(args);
+}
+
+static void segfault_freeing(void* ptr) {
+  free(ptr);
+  segfault();
+}
+
+static void segfault_freeing_page(void* ptr) {
+  palloc_free_page(ptr);
+  segfault();
 }
 
 // =======

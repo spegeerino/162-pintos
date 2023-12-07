@@ -453,7 +453,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   lock_acquire(&global_filesys_lock);
 
   /* Open executable file. */
-  file = filesys_open(file_name);
+  file = filesys_open_file(NULL, file_name);
   if (file == NULL) {
     printf("load: %s: open failed\n", file_name);
     goto done;
