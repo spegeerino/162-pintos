@@ -26,8 +26,6 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-struct lock global_filesys_lock;
-
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
@@ -55,7 +53,6 @@ void userprog_init(void) {
   ASSERT(success);
 
   list_init(&t->pcb->children_shared);
-  lock_init(&global_filesys_lock);
 
   t->pcb->next_fd = 3;
 }
@@ -235,8 +232,6 @@ void process_exit(void) {
     arc_dec_ref(&child->arc);
   }
 
-  lock_acquire(&global_filesys_lock);
-
   /* Close own exec file and CWD (will allow write too) */
   file_close(pcb_to_free->self_exec_file);
   dir_close(pcb_to_free->cwd);
@@ -252,8 +247,6 @@ void process_exit(void) {
       file_close(inode->file);
     free(inode);
   }
-
-  lock_release(&global_filesys_lock);
 
   /* Finally, free PCB and exit */
   free(pcb_to_free);
@@ -308,9 +301,7 @@ static bool setup_pcb(struct shared_proc_data* shared) {
   t->pcb = new_pcb;
 
   /* Set the current working directory to the root directory */
-  lock_acquire(&global_filesys_lock);
   t->pcb->cwd = dir_open_root();
-  lock_release(&global_filesys_lock);
   if (t->pcb->cwd == NULL)
     return false;
 
@@ -453,9 +444,6 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
     goto done;
   process_activate();
 
-  /* Acquire global filesystem lock */
-  lock_acquire(&global_filesys_lock);
-
   /* Open executable file. */
   file = filesys_open_file(NULL, file_name);
   if (file == NULL) {
@@ -535,8 +523,6 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   success = true;
 
 done:
-  /* We arrive here whether the load is successful or not. */
-  lock_release(&global_filesys_lock);
   return success;
 }
 

@@ -109,11 +109,7 @@ SYSCALL_DEFINE(sc_create, SYS_CREATE, bool, args, char* path, unsigned initial_s
     segfault_freeing_page(path);
 
   /* Create file */
-  lock_acquire(&global_filesys_lock);
-  bool result = filesys_create_file(thread_current()->pcb->cwd, path, args->initial_size);
-  lock_release(&global_filesys_lock);
-
-  return result;
+  return filesys_create_file(thread_current()->pcb->cwd, path, args->initial_size);
 }
 
 SYSCALL_DEFINE(sc_remove, SYS_REMOVE, bool, args, char* path) {
@@ -125,11 +121,7 @@ SYSCALL_DEFINE(sc_remove, SYS_REMOVE, bool, args, char* path) {
     segfault_freeing_page(path);
 
   /* Remove file */
-  lock_acquire(&global_filesys_lock);
-  bool result = filesys_remove(thread_current()->pcb->cwd, path);
-  lock_release(&global_filesys_lock);
-
-  return result;
+  return filesys_remove(thread_current()->pcb->cwd, path);
 }
 
 SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* path) {
@@ -146,9 +138,6 @@ SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* path) {
   struct open_inode* inode = malloc(sizeof *inode);
   if (inode == NULL)
     return -1;
-
-  /* Make sure to acquire the lock */
-  lock_acquire(&global_filesys_lock);
 
   /* Open the inode */
   struct inode* inner = filesys_open(pcb->cwd, path);
@@ -177,14 +166,12 @@ SYSCALL_DEFINE(sc_open, SYS_OPEN, int, args, char* path) {
   }
 
   inode->fd = pcb->next_fd++;
-  lock_release(&global_filesys_lock);
 
   // puts the created struct file* into the fd table
   list_push_back(&pcb->open_inodes, &inode->elem);
   return inode->fd;
 
 cleanup:;
-  lock_release(&global_filesys_lock);
   free(inode);
   return -1;
 }
@@ -203,10 +190,8 @@ SYSCALL_DEFINE(sc_filesize, SYS_FILESIZE, off_t, args, int fd) {
   if (inode == NULL || inode->type != FILE)
     return -1;
 
-  /* Return length of the file, making sure to acquire the lock */
-  lock_acquire(&global_filesys_lock);
+  /* Return length of the file */
   off_t output = file_length(inode->file);
-  lock_release(&global_filesys_lock);
 
   return output;
 }
@@ -233,10 +218,8 @@ SYSCALL_DEFINE(sc_read, SYS_READ, off_t, args, int fd, void* dst, unsigned size)
   if (buf == NULL)
     return -1;
 
-  /* Read from file to temporary buffer, making sure to acquire the lock */
-  lock_acquire(&global_filesys_lock);
+  /* Read from file to temporary buffer */
   off_t result = file_read(inode->file, buf, args->size);
-  lock_release(&global_filesys_lock);
 
   /* Copy to user memory using the helper (this handles segfaults) */
   if (!memcpy_to_user(args->dst, buf, args->size)) {
@@ -274,12 +257,8 @@ SYSCALL_DEFINE(sc_write, SYS_WRITE, off_t, args, int fd, void* src, unsigned siz
   if (inode == NULL || inode->type != FILE)
     return -1;
 
-  /* Read from temporary buffer to file, making sure to acquire the lock */
-  lock_acquire(&global_filesys_lock);
-  off_t result = file_write(inode->file, args->src, args->size);
-  lock_release(&global_filesys_lock);
-
-  return result;
+  /* Read from temporary buffer to file */
+  return file_write(inode->file, args->src, args->size);
 }
 
 SYSCALL_DEFINE(sc_seek, SYS_SEEK, int, args, int fd, unsigned position) {
@@ -288,11 +267,8 @@ SYSCALL_DEFINE(sc_seek, SYS_SEEK, int, args, int fd, unsigned position) {
   if (inode == NULL || inode->type != FILE)
     return -1;
 
-  /* Seek, making sure to acquire the lock */
-  lock_acquire(&global_filesys_lock);
+  /* Seek */
   file_seek(inode->file, args->position);
-  lock_release(&global_filesys_lock);
-
   return 0;
 }
 
@@ -302,7 +278,6 @@ SYSCALL_DEFINE(sc_tell, SYS_TELL, off_t, args, int fd) {
   if (inode == NULL || inode->type != FILE)
     return -1;
 
-  /* Don't need to acquire the lock here */
   return file_tell(inode->file);
 }
 
@@ -312,13 +287,11 @@ SYSCALL_DEFINE(sc_close, SYS_CLOSE, int, args, int fd) {
   if (inode == NULL)
     return -1;
 
-  /* Close the file or directory, making sure to acquire the lock */
-  lock_acquire(&global_filesys_lock);
+  /* Close the file or directory */
   if (inode->type == DIRECTORY)
     dir_close(inode->dir);
   else if (inode->type == FILE)
     file_close(inode->file);
-  lock_release(&global_filesys_lock);
 
   /* Remove from the OFD table */
   list_remove(&inode->elem);
@@ -335,16 +308,12 @@ SYSCALL_DEFINE(sc_chdir, SYS_CHDIR, bool, args, char* dir) {
     segfault_freeing_page(path);
 
   /* Open new directory */
-  lock_acquire(&global_filesys_lock);
   struct dir* dir = filesys_open_dir(thread_current()->pcb->cwd, path);
-  lock_release(&global_filesys_lock);
   if (dir == NULL)
     return false;
 
   /* Close old directory */
-  lock_acquire(&global_filesys_lock);
   dir_close(thread_current()->pcb->cwd);
-  lock_release(&global_filesys_lock);
 
   /* Set CWD in PCB */
   thread_current()->pcb->cwd = dir;
@@ -361,11 +330,7 @@ SYSCALL_DEFINE(sc_mkdir, SYS_MKDIR, bool, args, char* dir) {
     segfault_freeing_page(path);
 
   /* Create directory */
-  lock_acquire(&global_filesys_lock);
-  bool result = filesys_create_dir(thread_current()->pcb->cwd, path);
-  lock_release(&global_filesys_lock);
-
-  return result;
+  return filesys_create_dir(thread_current()->pcb->cwd, path);
 }
 
 SYSCALL_DEFINE(sc_readdir, SYS_READDIR, bool, args, int fd, char* name) {
@@ -374,11 +339,9 @@ SYSCALL_DEFINE(sc_readdir, SYS_READDIR, bool, args, int fd, char* name) {
   if (inode == NULL || inode->type != DIRECTORY)
     return false;
 
-  /* Read directory entry, making sure to acquire the lock */
-  lock_acquire(&global_filesys_lock);
+  /* Read directory entry */
   char name[NAME_MAX + 1];
   bool result = dir_readdir(inode->dir, name);
-  lock_release(&global_filesys_lock);
 
   /* Copy name to user memory */
   if (!memcpy_to_user(args->name, name, NAME_MAX + 1))

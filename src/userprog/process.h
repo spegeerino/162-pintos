@@ -12,8 +12,6 @@
 #define MAX_STACK_PAGES (1 << 11)
 #define MAX_THREADS 127
 
-extern struct lock global_filesys_lock;
-
 /* PIDs and TIDs are the same type. PID should be
    the TID of the main thread of the process */
 typedef tid_t pid_t;
