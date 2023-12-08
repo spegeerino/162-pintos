@@ -4,13 +4,13 @@ raw_tests = dir-empty-name dir-mk-tree dir-mkdir dir-open		\
 dir-over-file dir-rm-cwd dir-rm-parent dir-rm-root dir-rm-tree		\
 dir-rmdir dir-under-file dir-vine grow-create grow-dir-lg		\
 grow-file-size grow-root-lg grow-root-sm grow-seq-lg grow-seq-sm	\
-grow-sparse grow-tell grow-two-files syn-rw
+grow-sparse grow-tell grow-two-files syn-rw dir-chdir-fork grow-oom
 
 tests/filesys/extended_TESTS = $(patsubst %,tests/filesys/extended/%,$(raw_tests))
 tests/filesys/extended_EXTRA_GRADES = $(patsubst %,tests/filesys/extended/%-persistence,$(raw_tests))
 
 tests/filesys/extended_PROGS = $(tests/filesys/extended_TESTS) \
-tests/filesys/extended/child-syn-rw tests/filesys/extended/tar
+tests/filesys/extended/child-syn-rw tests/filesys/extended/child-chdir tests/filesys/extended/tar
 
 $(foreach prog,$(tests/filesys/extended_PROGS),			\
 	$(eval $(prog)_SRC += $(prog).c tests/lib.c tests/filesys/seq-test.c))
@@ -26,6 +26,7 @@ tests/filesys/extended/dir-mk-tree_SRC += tests/filesys/extended/mk-tree.c
 tests/filesys/extended/dir-rm-tree_SRC += tests/filesys/extended/mk-tree.c
 
 tests/filesys/extended/syn-rw_PUTFILES += tests/filesys/extended/child-syn-rw
+tests/filesys/extended/dir-chdir-fork_PUTFILES += tests/filesys/extended/child-chdir
 
 tests/filesys/extended/dir-vine.output: TIMEOUT = 150
 
