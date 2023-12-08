@@ -1,3 +1,4 @@
+#include "filesys/buffer-cache.h"
 #include "filesys/filesys.h"
 #include <debug.h>
 #include <stdio.h>
