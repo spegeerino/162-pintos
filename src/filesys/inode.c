@@ -340,47 +340,141 @@ void inode_allow_write(struct inode* inode) {
   lock_release(&inode->lock);
 }
 
-/* Resize the indirect block at *SECTOR to have NEEDED blocks, allocating
-   and freeing children blocks as necessary.
-   Recursively calls itself to resize children blocks. DEPTH is the
-   depth of the block, with 0 being a direct block, 1 being an indirect
-   block, and 2 being a doubly indirect block.
-   If NEEDED <= 0, also free the block (and children blocks).
-   If NEEDED > 0, also allocate the block if it doesn't exist.
-   Returns true on success, false on failure. */
-static bool indirect_block_resize(int depth, block_sector_t* sector, int needed) {
-  /* If we don't need a block and none is allocated, we are done */
-  if (needed <= 0 && *sector == 0)
-    return true;
+static uint8_t zeros[BLOCK_SECTOR_SIZE];
 
-  /* Allocate or read in a block */
-  indirect_block_t block;
-  if (*sector == 0) {
-    if (!free_map_allocate(1, sector))
-      return false;
-    memset(block, 0, BLOCK_SECTOR_SIZE);
-  } else {
-    buffer_cache_read(*sector, &block, sizeof block, 0);
+/* These little macros allow us to use the same function
+   to take care of both allocating and deallocating. */
+
+#define ALLOC_OR_FREE(SECTOR, ALLOC)                                                               \
+  if (ALLOC) {                                                                                     \
+    if (*SECTOR == 0 && !free_map_allocate(1, SECTOR))                                             \
+      return false;                                                                                \
+    buffer_cache_write(*SECTOR, zeros, BLOCK_SECTOR_SIZE, 0);                                      \
+  } else if (*SECTOR != 0) {                                                                       \
+    free_map_release(*SECTOR, 1);                                                                  \
+    *SECTOR = 0;                                                                                   \
   }
 
-  if (depth > 0) {
-    /* Calculate child capacity */
-    size_t child_capacity = 1;
-    for (int i = 1; i < depth; i++)
-      child_capacity *= INDIRECT_CAPACITY;
-
-    /* Loop through child blocks */
-    for (size_t idx = 0; idx < INDIRECT_CAPACITY; idx++)
-      if (!indirect_block_resize(depth - 1, &block[idx], needed - idx * child_capacity))
-        return false;
+#define READ_WITH_ALLOC_OR_FREE(SECTOR, BUFFER, ALLOC)                                             \
+  if (ALLOC) {                                                                                     \
+    /* Allocating */                                                                               \
+    if (*SECTOR == 0) {                                                                            \
+      if (!free_map_allocate(1, SECTOR))                                                           \
+        return false;                                                                              \
+      buffer_cache_write(*SECTOR, zeros, BLOCK_SECTOR_SIZE, 0);                                    \
+    }                                                                                              \
+    buffer_cache_read(*SECTOR, BUFFER, BLOCK_SECTOR_SIZE, 0);                                      \
+  } else {                                                                                         \
+    /* Releasing */                                                                                \
+    if (*SECTOR == 0)                                                                              \
+      BUFFER = NULL;                                                                               \
+    else {                                                                                         \
+      buffer_cache_read(*SECTOR, BUFFER, BLOCK_SECTOR_SIZE, 0);                                    \
+      free_map_release(*SECTOR, 1);                                                                \
+    }                                                                                              \
   }
 
-  /* Write back block, or free it if we don't need it anymore */
-  if (needed <= 0) {
-    free_map_release(*sector, 1);
-    *sector = (block_sector_t)0;
+static bool do_alloc_or_free(struct inode_disk* disk_inode, size_t start, size_t stop, bool alloc) {
+  int dbl_ind_idx;                         // index in doubly indirect block
+  int dbl_ind_idx_max = INDIRECT_CAPACITY; // max index in doubly indirect block
+  int ind_idx;     // index in indirect block (also used to count direct ptrs)
+  int ind_idx_max; // max index in indirect block (or in direct ptrs)
+
+  if (start < DIRECT_MAX) {
+    dbl_ind_idx = -2;
+    ind_idx = start;
+    ind_idx_max = DIRECT_MAX;
+  } else if (start < INDIRECT_MAX) {
+    dbl_ind_idx = -1;
+    ind_idx = start - DIRECT_MAX;
+    ind_idx_max = INDIRECT_CAPACITY;
   } else {
-    buffer_cache_write(*sector, &block, sizeof block, 0);
+    dbl_ind_idx = (start - INDIRECT_MAX) / INDIRECT_CAPACITY;
+    ind_idx = (start - INDIRECT_MAX) % INDIRECT_CAPACITY;
+    ind_idx_max = INDIRECT_CAPACITY;
+  }
+
+  block_sector_t _dbl_ind_block[INDIRECT_CAPACITY]; // bufer for doubly indirect block
+  block_sector_t* dbl_ind_block = NULL;             // could be either `_dbl_ind_block` or `NULL`
+  block_sector_t _ind_block[INDIRECT_CAPACITY];     // buffer for indirect block
+  block_sector_t* ind_block; // could be either `_ind_block` or `inode_disk->direct` or `NULL`
+
+fetch_dbl_ind_block:
+  if (dbl_ind_idx >= 0) {
+    dbl_ind_block = _dbl_ind_block;
+    READ_WITH_ALLOC_OR_FREE(&disk_inode->doubly_indirect, dbl_ind_block, alloc)
+  }
+
+fetch_ind_block:
+  if (dbl_ind_idx == -2) {
+    // We don't need to fetch anything. The direct ptrs are stored in inode_disk.
+    ind_block = disk_inode->direct;
+  }
+
+  else if (dbl_ind_idx == -1) {
+    // We need to fetch the indirect block pointed to by inode_disk.
+    ind_block = _ind_block;
+    READ_WITH_ALLOC_OR_FREE(&disk_inode->indirect, ind_block, alloc)
+  }
+
+  else {
+    // We need to fetch the indirect block pointed to by the doubly indirect block.
+    ind_block = _ind_block;
+    READ_WITH_ALLOC_OR_FREE(&dbl_ind_block[dbl_ind_idx], ind_block, alloc)
+  }
+
+  // ==============
+  // ACTUAL LOOPING
+  // ==============
+
+  while (start < stop) {
+    // Allocate a new sector if necessary
+    if (ind_block != NULL) {
+      ALLOC_OR_FREE(&ind_block[ind_idx], alloc)
+    }
+
+    // Advance to the next block
+    ind_idx++;
+    start++;
+
+    // Check if we need to save the current indirect block.
+    // This happens when we've filled up the current indirect block,
+    // or when we've reached the end.
+
+    if (ind_idx == ind_idx_max || start == stop) {
+      if (dbl_ind_idx == -2) {
+        // We don't need to save direct ptrs store in inode_disk
+        ind_idx_max = INDIRECT_CAPACITY;
+        ind_block = _ind_block;
+      } else if (dbl_ind_idx == -1) {
+        // This one is pointed to by inode_disks
+        if (ind_block != NULL)
+          buffer_cache_write(disk_inode->indirect, ind_block, BLOCK_SECTOR_SIZE, 0);
+      } else {
+        // This one is pointed to by the doubly indirect block
+        if (ind_block != NULL)
+          buffer_cache_write(dbl_ind_block[dbl_ind_idx], ind_block, BLOCK_SECTOR_SIZE, 0);
+      }
+
+      // Advance to the next indirect block
+      ind_idx = 0;
+      dbl_ind_idx++;
+
+      // Save the doubly indirect block if needed
+      if (dbl_ind_idx == dbl_ind_idx_max || start == stop) {
+        if (dbl_ind_block != NULL)
+          buffer_cache_write(disk_inode->doubly_indirect, dbl_ind_block, BLOCK_SECTOR_SIZE, 0);
+      }
+
+      if (start == stop)
+        break;
+
+      // Fetch the next indirect block. Also, if needed, fetch the doubly indirect block.
+      if (dbl_ind_idx == 0)
+        goto fetch_dbl_ind_block;
+      else
+        goto fetch_ind_block;
+    }
   }
 
   return true;
@@ -390,19 +484,19 @@ static bool inode_disk_resize(struct inode_disk* disk_inode, off_t new_length) {
   ASSERT(disk_inode != NULL);
   ASSERT(new_length >= 0);
   size_t new_sectors = bytes_to_sectors(new_length);
+  size_t old_sectors = bytes_to_sectors(disk_inode->length);
 
-  for (size_t idx = 0; idx < DIRECT_MAX; idx++)
-    if (!indirect_block_resize(0, &disk_inode->direct[idx], new_sectors - idx))
+  if (new_sectors > old_sectors) {
+    if (!do_alloc_or_free(disk_inode, old_sectors, new_sectors, true))
       goto cleanup;
-  if (!indirect_block_resize(1, &disk_inode->indirect, new_sectors - DIRECT_MAX))
-    goto cleanup;
-  if (!indirect_block_resize(2, &disk_inode->doubly_indirect, new_sectors - INDIRECT_MAX))
-    goto cleanup;
+  } else if (new_sectors < old_sectors) {
+    do_alloc_or_free(disk_inode, new_sectors, old_sectors, false);
+  }
 
   disk_inode->length = new_length;
   return true;
 
 cleanup:
-  inode_disk_resize(disk_inode, disk_inode->length);
+  do_alloc_or_free(disk_inode, old_sectors, new_sectors, false);
   return false;
 }
