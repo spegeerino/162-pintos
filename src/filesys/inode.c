@@ -58,7 +58,7 @@ static block_sector_t inode_disk_get_sector(struct inode_disk* disk_inode, size_
 static block_sector_t byte_to_sector(const struct inode* inode, off_t pos) {
   ASSERT(inode != NULL);
   struct inode_disk inode_disk;
-  buffer_cache_read(inode->sector, &inode_disk, sizeof inode_disk, 0);
+  buffer_cache_read(inode->sector, &inode_disk, BLOCK_SECTOR_SIZE, 0);
   if (pos >= inode_disk.length)
     return -1;
   block_sector_t result = inode_disk_get_sector(&inode_disk, pos / BLOCK_SECTOR_SIZE);
@@ -106,7 +106,7 @@ bool inode_create(block_sector_t sector, off_t length, enum inode_type type) {
     return false;
 
   /* Write inode_disk to disk */
-  buffer_cache_write(sector, disk_inode, sizeof *disk_inode, 0);
+  buffer_cache_write(sector, disk_inode, BLOCK_SECTOR_SIZE, 0);
 
   return true;
 }
@@ -184,7 +184,7 @@ void inode_close(struct inode* inode) {
   /* Deallocate blocks if removed. */
   if (inode->removed) {
     struct inode_disk disk_inode;
-    buffer_cache_read(inode->sector, &disk_inode, sizeof disk_inode, 0);
+    buffer_cache_read(inode->sector, &disk_inode, BLOCK_SECTOR_SIZE, 0);
     inode_disk_resize(&disk_inode, 0);
     free_map_release(inode->sector, 1);
   }
@@ -211,8 +211,8 @@ void inode_remove(struct inode* inode) {
    than SIZE if an error occurs or end of file is reached. */
 off_t inode_read_at(struct inode* inode, void* buffer, off_t size, off_t offset) {
   /* Read inode from disk */
-  autofree struct inode_disk* disk_inode = malloc(sizeof *disk_inode);
-  buffer_cache_read(inode->sector, disk_inode, sizeof *disk_inode, 0);
+  autofree struct inode_disk* disk_inode = malloc(BLOCK_SECTOR_SIZE);
+  buffer_cache_read(inode->sector, disk_inode, BLOCK_SECTOR_SIZE, 0);
 
   block_sector_t sector = byte_to_sector(inode, offset);
   if (sector == (uint32_t)-1)
@@ -265,8 +265,8 @@ off_t inode_write_at(struct inode* inode, const void* buffer, off_t size, off_t 
   lock_acquire(&inode->lock);
 
   /* Read inode from disk */
-  autofree struct inode_disk* disk_inode = malloc(sizeof *disk_inode);
-  buffer_cache_read(inode->sector, disk_inode, sizeof *disk_inode, 0);
+  autofree struct inode_disk* disk_inode = malloc(BLOCK_SECTOR_SIZE);
+  buffer_cache_read(inode->sector, disk_inode, BLOCK_SECTOR_SIZE, 0);
 
   /* In case we need to grow the inode */
   if (offset + size > disk_inode->length) {
@@ -274,7 +274,7 @@ off_t inode_write_at(struct inode* inode, const void* buffer, off_t size, off_t 
       lock_release(&inode->lock);
       return 0;
     }
-    buffer_cache_write(inode->sector, disk_inode, sizeof *disk_inode, 0);
+    buffer_cache_write(inode->sector, disk_inode, BLOCK_SECTOR_SIZE, 0);
   }
 
   /* Check cache for desired entry. */
