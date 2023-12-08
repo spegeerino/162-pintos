@@ -36,14 +36,14 @@ static void flush_cache_entry(int i) {
 /* Evicts buffer cache entry at index i and replaces it with
    new entry with new sector. */
 static void replace_cache_entry(int i, block_sector_t sector) {
-  // ASSERT(lock_held_by_current_thread(&cache_lock));
+  ASSERT(lock_held_by_current_thread(&cache_lock));
 
   struct filesys_cache_entry* to_replace = &buffer_cache[i];
   rw_lock_acquire(&to_replace->entry_lock, false);
   if (to_replace->valid && to_replace->modified)
     flush_cache_entry(i); // sets .modified to false
   to_replace->sector = sector;
-  // lock_release(&cache_lock); // can't block on IO
+  lock_release(&cache_lock); // can't block on IO
 
   block_read(fs_device, sector, to_replace->contents);
   to_replace->valid = true;
@@ -52,7 +52,7 @@ static void replace_cache_entry(int i, block_sector_t sector) {
 
 /* Evict least recently used cache block and replace it with newly needed sector. */
 static struct filesys_cache_entry* add_cache_entry(block_sector_t sector) {
-  // ASSERT(lock_held_by_current_thread(&cache_lock));
+  ASSERT(lock_held_by_current_thread(&cache_lock));
 
   int to_evict_idx = 0;
   for (int i = 1; i < BUFFER_SIZE; i++) {
@@ -73,7 +73,7 @@ static struct filesys_cache_entry* add_cache_entry(block_sector_t sector) {
    to prevent race conditions.
 */
 static struct filesys_cache_entry* search_cache(block_sector_t sector, bool reader) {
-  // ASSERT(lock_held_by_current_thread(&cache_lock));
+  ASSERT(lock_held_by_current_thread(&cache_lock));
 
   for (int i = 0; i < BUFFER_SIZE; i++) {
     if (buffer_cache[i].valid && sector == buffer_cache[i].sector) {
@@ -91,10 +91,10 @@ static struct filesys_cache_entry* search_cache(block_sector_t sector, bool read
    from disk.
    */
 static struct filesys_cache_entry* ensure_cache_entry(block_sector_t sector, bool reader) {
-  // lock_acquire(&cache_lock);
+  lock_acquire(&cache_lock);
   struct filesys_cache_entry* out = search_cache(sector, reader);
   if (out != NULL) {
-    // lock_release(&cache_lock);
+    lock_release(&cache_lock);
     return out;
   }
   /* Cache entry not present, need to add it and check for the cache */
@@ -114,11 +114,11 @@ void buffer_cache_init() {
 }
 
 void buffer_cache_done() {
-  // lock_acquire(&cache_lock);
+  lock_acquire(&cache_lock);
   for (int i = 0; i < BUFFER_SIZE; i++)
     if (buffer_cache[i].valid)
       flush_cache_entry(i);
-  // lock_release(&cache_lock);
+  lock_release(&cache_lock);
 }
 
 /* Reads data from sector SECTOR on the file system into
