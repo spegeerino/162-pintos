@@ -1,7 +1,9 @@
 #include "filesys/file.h"
 #include <debug.h>
 #include "devices/block.h"
+#include "filesys/buffer-cache.h"
 #include "filesys/inode.h"
+#include "filesys/off_t.h"
 #include "threads/malloc.h"
 #include "filesys/filesys.h"
 

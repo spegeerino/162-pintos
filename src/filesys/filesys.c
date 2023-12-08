@@ -21,6 +21,7 @@ void filesys_init(bool format) {
     PANIC("No file system device found, can't initialize file system.");
 
   inode_init();
+  buffer_cache_init();
   free_map_init();
 
   if (format)
@@ -33,7 +34,7 @@ void filesys_init(bool format) {
    to disk. */
 void filesys_done(void) {
   free_map_close();
-  inode_done();
+  buffer_cache_done();
 }
 
 /* Extracts the directory path and file name from a given path.
