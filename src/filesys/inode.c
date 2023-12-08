@@ -150,7 +150,11 @@ struct inode* inode_reopen(struct inode* inode) {
   if (inode == NULL)
     return NULL;
   lock_acquire(&inode->lock);
-  inode->open_cnt++;
+  if (inode->open_cnt == 0) {
+    inode = NULL;
+  } else {
+    inode->open_cnt++;
+  }
   lock_release(&inode->lock);
   return inode;
 }
@@ -166,15 +170,16 @@ void inode_close(struct inode* inode) {
   if (inode == NULL)
     return;
 
-  lock_acquire(&open_inodes_lock);
   lock_acquire(&inode->lock);
+  int open_cnt = --inode->open_cnt;
+  lock_release(&inode->lock);
 
   /* If other still have it open, leave it there */
-  if (--inode->open_cnt > 0) {
-    lock_release(&inode->lock);
-    lock_release(&open_inodes_lock);
+  if (open_cnt > 0) {
     return;
   }
+
+  lock_acquire(&open_inodes_lock);
 
   /* Deallocate blocks if removed. */
   if (inode->removed) {
@@ -186,10 +191,9 @@ void inode_close(struct inode* inode) {
 
   /* Remove from inode list */
   list_remove(&inode->elem);
-  lock_release(&inode->lock);
-  lock_release(&open_inodes_lock);
   free(inode);
 
+  lock_release(&open_inodes_lock);
   return;
 }
 
