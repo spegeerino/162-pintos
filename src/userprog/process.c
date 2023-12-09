@@ -270,6 +270,10 @@ void process_activate(void) {
 }
 
 bool shared_proc_data_init(struct shared_proc_data* shared) {
+  if (thread_current()->pcb->cwd != NULL)
+    shared->parent_cwd = dir_reopen(thread_current()->pcb->cwd);
+  else
+    shared->parent_cwd = dir_open_root();
   shared->cmd_line = palloc_get_page(0);
   if (shared->cmd_line == NULL)
     return false;
@@ -300,8 +304,12 @@ static bool setup_pcb(struct shared_proc_data* shared) {
   new_pcb->pagedir = NULL;
   t->pcb = new_pcb;
 
-  /* Set the current working directory to the root directory */
-  t->pcb->cwd = dir_open_root();
+  /* Set the current working directory to the root directory, 
+     or the cwd of our parent. */
+  if (shared != NULL && shared->parent_cwd != NULL)
+    t->pcb->cwd = shared->parent_cwd;
+  else
+    t->pcb->cwd = dir_open_root();
   if (t->pcb->cwd == NULL)
     return false;
 

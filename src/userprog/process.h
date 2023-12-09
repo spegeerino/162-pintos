@@ -53,6 +53,7 @@ struct open_inode {
 struct shared_proc_data {
   pid_t pid;
   char* cmd_line;
+  struct dir* parent_cwd;
   struct semaphore exec_sema;
   struct semaphore wait_sema;
   int exit_status;
