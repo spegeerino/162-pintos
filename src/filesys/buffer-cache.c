@@ -127,10 +127,10 @@ void buffer_cache_done() {
 void buffer_cache_read(block_sector_t sector, void* buffer, off_t size, off_t offset) {
   ASSERT(offset + size <= BLOCK_SECTOR_SIZE);
 
-  struct filesys_cache_entry* entry = ensure_cache_entry(sector, false);
+  struct filesys_cache_entry* entry = ensure_cache_entry(sector, true);
   memcpy(buffer, entry->contents + offset, size);
   entry->last_used_tick = timer_ticks();
-  rw_lock_release(&entry->entry_lock, false);
+  rw_lock_release(&entry->entry_lock, true);
 }
 
 /* Writes data from the given BUFFER into sector SECTOR on
